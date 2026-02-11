@@ -1,0 +1,407 @@
+---
+title: "Shannon entropy"
+output:
+  html_document: default
+  pdf_document: default
+date: "2025-07-03"
+---
+
+```{r}
+#The same codes were used for all genotypes, changing the locations of the genes along the genome
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(writexl)
+library(dplyr)
+
+# Read entropy file
+ruta <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/Entropia_alineamiento_58.xlsx"
+entropia <- read_excel(ruta)
+
+# Convert decimal commas to dots if necessary
+entropia$Entropy <- as.numeric(gsub(",", ".", entropia$Entropy))
+entropia <- entropia[!is.na(entropia$Entropy), ]  # Remove NA values
+
+# Manual classification ensuring that Entropy == 0 is Conserved
+entropia$Group <- NA
+entropia$Group[entropia$Entropy == 0] <- "Conserved"
+entropia$Group[entropia$Entropy >= 0.1 & entropia$Entropy <= 0.5] <- "Medium"
+entropia$Group[entropia$Entropy > 0.5] <- "High"
+
+# Create subsets by group
+conserved <- subset(entropia, Group == "Conserved")
+medium <- subset(entropia, Group == "Medium")
+high <- subset(entropia, Group == "High")
+
+# Export separate files
+write_xlsx(conserved, "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/conserved_entropy_58.xlsx")
+write_xlsx(medium, "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/medium_entropy_58.xlsx")
+write_xlsx(high, "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/high_entropy_58.xlsx")
+
+png("C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/hist_entropy_hp58.png",
+    width = 7, height = 5, units = "in", res = 300)
+
+hist(entropia$Entropy,
+     breaks = seq(0, 1, by = 0.1),
+     main = "General entropy distribution by position HPV 58",
+     xlab = "Shannon Entropy",
+     col = "lightblue",
+     xlim = c(0, 1),
+     xaxt = "n",
+     freq = TRUE)
+axis(side = 1, at = seq(0, 1, by = 0.1))
+
+dev.off()  # <- IMPORTANT
+
+# Entropy profile
+ggplot(entropia, aes(x = Position, y = Entropy)) +
+  geom_line(color = "coral", size = 0.7) +
+  scale_x_continuous(breaks = seq(0, max(entropia$Position), by = 500)) +
+  labs(title = "Entropy profile by position in HPV58",
+       x = "Position",
+       y = "Shannon Entropy") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 58),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 8),
+    axis.title = element_text(size = 10),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank()
+  )
+
+# Force order in the Group factor
+entropia$Group <- factor(entropia$Group, levels = c("Conserved", "Medium", "High"))
+
+# Create count table with range labels
+group_count <- entropia %>%
+  filter(!is.na(Group)) %>%
+  count(Group) %>%
+  mutate(
+    Range = case_when(
+      Group == "Conserved" ~ "Entropy = 0",
+      Group == "Medium"    ~ "Entropy 0.1 - 0.5",
+      Group == "High"      ~ "Entropy > 0.5"
+    ),
+    Label = paste0(Group, "\n(", Range, ")")
+  )
+
+# Force order again in Label to maintain order in the plot
+group_count$Label <- factor(group_count$Label, levels = group_count$Label)
+
+# Bar plot with customized X labels and range displayed
+ggplot(group_count, aes(x = Label, y = n, fill = Group)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3) +  # Smaller number displayed above
+  scale_fill_manual(values = c("Conserved" = "#66c2a5",
+                               "Medium" = "#fc8d62",
+                               "High" = "#8da0cb")) +
+  labs(title = "Classification of positions based on entropy",
+       x = NULL,
+       y = "Number of positions") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),  # Smaller X-axis text
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(dplyr)
+
+# 1. Read Excel file
+ruta <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/conserved_entropy_58.xlsx"
+conservados <- read_excel(ruta)
+
+# 2. Sort by position (just in case)
+conservados <- conservados %>% arrange(Position)
+
+# 3. Detect continuous regions
+conservados <- conservados %>%
+  mutate(diff = c(NA, diff(Position)),
+         grupo = cumsum(ifelse(is.na(diff) | diff != 1, 1, 0)))
+
+# 4. Get start and end of each continuous region
+regiones_conservadas <- conservados %>%
+  group_by(grupo) %>%
+  summarise(start = min(Position), end = max(Position), .groups = "drop")
+
+# 5. Plot conserved regions as blocks
+ggplot() +
+  geom_rect(data = regiones_conservadas,
+            aes(xmin = start, xmax = end, ymin = 0, ymax = 1),
+            fill = "forestgreen", alpha = 0.6) +
+  scale_x_continuous(breaks = seq(0, max(regiones_conservadas$end), by = 150)) +
+  labs(title = "Conserved genomic regions in HPV58",
+       x = "Genome Position",
+       y = "Conservation (Shannon Entropy = 0)") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(size = 7, angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 7),
+    axis.title.x = element_text(size = 9),
+    axis.title.y = element_text(size = 9),
+    axis.ticks.y = element_blank(),
+    axis.text.y.right = element_blank()
+  )
+
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(writexl)
+
+#The gene ranges were used based on each genotype
+# 1. Read file
+ruta <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/high_entropy_58.xlsx"
+datos <- read_excel(ruta)
+
+# 2. Create an empty Gen column
+datos <- datos %>%
+  mutate(Gen = NA_character_)
+
+# 3. Assign gene name based on Position
+datos <- datos %>%
+  mutate(Gen = case_when(
+    Position >= 110  & Position <= 559  ~ "E6",
+    Position >= 574  & Position <= 870  ~ "E7",
+    Position >= 883  & Position <= 2817 ~ "E1",
+    Position >= 2753 & Position <= 3829 ~ "E2",
+    Position >= 3892 & Position <= 4122 ~ "E5α",
+    Position >= 4244 & Position <= 5662 ~ "L2",
+    Position >= 5643 & Position <= 7139 ~ "L1",
+    TRUE ~ NA_character_  # Outside defined ranges
+  ))
+
+# Convert Gen to character and remove rows without an assigned gene
+datos$Gen <- as.character(datos$Gen)
+datos_filtrados <- datos %>% filter(!is.na(Gen) & Gen != "")
+
+# 4. Optional: save the result to a new Excel file
+write_xlsx(datos, "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/High_entropy_58_con_genes.xlsx")
+
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(dplyr)
+
+# Read data
+ruta <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/High_entropy_58_con_genes.xlsx"
+datos <- read_excel(ruta)
+
+# Convert Gen to character and remove rows without an assigned gene
+datos$Gen <- as.character(datos$Gen)
+datos_filtrados <- datos %>% filter(!is.na(Gen) & Gen != "")
+
+# Check structure
+str(datos_filtrados)
+
+# Plot only data with an assigned gene
+p <- ggplot(datos_filtrados, aes(x = Position, y = Entropy)) +
+  geom_line(color = "gray70") +
+  geom_point(aes(color = Gen), size = 2) +
+  geom_text(aes(label = Gen), vjust = -1, size = 3, check_overlap = TRUE) +
+  scale_color_brewer(palette = "Set2") +
+  coord_cartesian(ylim = c(0.5, 1)) +  # Y-axis from 0.5 to 1.0 without clipping data
+  labs(title = "Entropy profile by Position with Gene annotation",
+       x = "Position",
+       y = "Entropy",
+       color = "Gene") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+print(p)
+
+print(datos_filtrados %>% select(Position, Entropy, Gen))
+
+# Export Excel
+ruta_salida <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/Entropy_position_genes.xlsx"
+write_xlsx(datos_filtrados, path = ruta_salida)
+
+# Create frequency table of each gene
+tabla_frecuencia_genes <- datos_filtrados %>%
+  count(Gen, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# Print table to console
+print(tabla_frecuencia_genes)
+
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+
+# 1) Leer y limpiar
+path  <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/Entropy_position_genes.xlsx"
+data  <- read_excel(path)
+
+data <- data %>%
+  # Opcional: recortar nombres de columnas (elimina espacios al inicio/final). Quita esto si no es necesario.
+  rename_with(trimws) %>% 
+  mutate(
+    Entropy = as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE)),
+    Gen     = as.character(Gen)
+  ) %>%
+  filter(!is.na(Gen), Gen != "", !is.na(Entropy))
+
+# 2) Orden fijo de genes (ajusta si tu anotación cambia)
+genome_order <- c("E6","E7","E1","E2","E5α","L2","L1")
+data <- data %>%
+  mutate(Gen = factor(Gen, levels = intersect(genome_order, unique(Gen))))
+
+# (Alternativa) Ordenar genes por entropía mediana (descomenta para usar)
+# gene_order_median <- data %>% group_by(Gen) %>%
+#   summarise(med = median(Entropy), .groups = "drop") %>%
+#   arrange(desc(med)) %>% pull(Gen)
+# data <- data %>% mutate(Gen = factor(Gen, levels = gene_order_median))
+
+# 3) Etiquetas del eje X incluyendo tamaño muestral (n) por gen
+n_lab <- data %>%
+  count(Gen, name = "n") %>%
+  mutate(label = paste0(Gen, "\n(n=", n, ")"))
+
+data <- data %>%
+  left_join(n_lab, by = "Gen") %>%
+  mutate(Gen_lab = factor(label, levels = n_lab$label))
+
+# 4) Violín + boxplot + marcador de media
+p <- ggplot(data, aes(x = Gen_lab, y = Entropy)) +
+  geom_violin(trim = FALSE, alpha = 0.65) +
+  geom_boxplot(width = 0.18, outlier.shape = NA, linewidth = 0.4, fill = "white") +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 2.4, stroke = 0.2, fill = "grey90") +
+  labs(
+    title = "Distribución de Entropía de Shannon por Gen (HPV58)",
+    x = NULL,
+    y = "Entropía de Shannon"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(size = 9),
+    panel.grid.minor = element_blank()
+  )
+
+print(p)
+
+# (Opcional) Guardar figura en alta resolución
+ggsave("C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/Fig_violin_entropy_by_gene.png",
+       plot = p, width = 7, height = 4.5, dpi = 300)
+
+
+```
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(dplyr)
+
+# Read data
+ruta <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/Entropy_position_genes.xlsx"
+datos <- read_excel(ruta)
+
+# Check structure
+str(datos)
+
+# If Gen has NA or empty values for unassigned positions, you can filter
+datos$Gen <- as.character(datos$Gen)  # In case it was imported as a factor
+datos$Gen[is.na(datos$Gen)] <- ""     # Use empty string instead of NA
+
+# Base plot with entropy line
+p <- ggplot(datos, aes(x = Position, y = Entropy)) +
+  geom_line(color = "gray70") +              # Base entropy line
+  geom_point(data = datos %>% filter(Gen != ""),
+             aes(color = Gen),               # Points colored by gene
+             size = 2) +
+  scale_color_brewer(palette = "Set2") +     # Color palette for genes
+  labs(title = "Entropy profile by Position with Gene annotation",
+       x = "Position",
+       y = "Entropy",
+       color = "Gene") +
+  theme_minimal(base_size = 14)
+
+# Add gene labels for positions that have a gene assigned
+p + geom_text(data = datos %>% filter(Gen != ""),
+              aes(label = Gen),
+              vjust = -1,
+              size = 3,
+              check_overlap = TRUE)  # Avoid overlapping text
+
+
+```
+
+
+
+```{r}
+library(Biostrings)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+
+# Read FASTA file
+aln <- readDNAStringSet("C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/HPV 58/HPV_58_ALI_filtrado.fasta")
+
+# Use the first sequence as reference
+ref <- as.character(aln[[1]])
+ref_name <- names(aln)[1]
+
+# Function to extract the country code from IDs containing IARCxxxxxXX
+extract_country <- function(id) {
+  match <- str_match(id, "IARC\\d+([A-Z]{1,2})")[,2]
+  return(match)
+}
+
+# Create table
+datos <- tibble(
+  ID = names(aln),
+  Country = extract_country(names(aln)),
+  Sequence = as.character(aln)
+) %>%
+  mutate(
+    Mutations = map_int(Sequence, ~ sum(strsplit(.x, "")[[1]] != strsplit(ref, "")[[1]])),
+    Length = nchar(ref),
+    Identity = round((1 - Mutations / Length) * 100, 2)
+  )
+
+# Summary by country
+summary_tbl <- datos %>%
+  filter(!is.na(Country)) %>%
+  group_by(Country) %>%
+  summarise(
+    N = n(),
+    Mean_identity = mean(Identity),
+    SD_identity = sd(Identity),
+    Min_identity = min(Identity),
+    Max_identity = max(Identity)
+  ) %>%
+  arrange(desc(Mean_identity))
+
+print(summary_tbl)
+
+# Plot
+ggplot(datos %>% filter(!is.na(Country)), aes(x = reorder(Country, -Identity), y = Identity)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Genetic conservation by country (HPV 58)",
+       x = "Country",
+       y = "Percent identity") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+```
+
+
+

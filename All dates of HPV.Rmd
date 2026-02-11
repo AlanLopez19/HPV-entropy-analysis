@@ -1,0 +1,76 @@
+---
+title: "Genotype table"
+output: html_document
+date: "2026-02-11"
+---
+
+```{r}
+# =====================================
+# Merge and order HPV genotype tables
+# =====================================
+
+# Required libraries
+library(readr)
+library(dplyr)
+library(openxlsx)
+
+# Correct folder path
+folder_path <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/secuencias_fasta_genotipos/secuencias_fasta_genotipos"
+
+# List all HPV tables (case-insensitive)
+files <- list.files(
+  path = folder_path,
+  pattern = "^HPV_[0-9]+_latinoamerica_tabla",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+# Safety check
+if (length(files) == 0) {
+  stop("No HPV tables were found. Please check file names and path.")
+}
+
+# Read, harmonize, and merge tables
+final_table <- lapply(files, function(f) {
+
+  df <- read_tsv(f, show_col_types = FALSE)
+
+  # Force Collection_Date to character if it exists
+  if ("Collection_Date" %in% colnames(df)) {
+    df <- df %>%
+      mutate(Collection_Date = as.character(Collection_Date))
+  }
+
+  # Add genotype column from filename
+  df %>%
+    mutate(
+      genotype = gsub(
+        "HPV_|_latinoamerica_tabla.*",
+        "",
+        basename(f),
+        ignore.case = TRUE
+      )
+    )
+}) %>%
+  bind_rows()
+
+# Order by genotype (numeric ascending)
+final_table_ordered <- final_table %>%
+  mutate(genotype = as.numeric(genotype)) %>%
+  arrange(genotype)
+
+# Output Excel file
+output_file <- file.path(
+  folder_path,
+  "HPV_Latinoamerica_merged_table_ordered.xlsx"
+)
+
+# Save Excel
+write.xlsx(final_table_ordered, output_file)
+
+# Confirmation
+cat("Merged and ordered table successfully saved at:\n", output_file, "\n")
+cat("Final table dimensions:", dim(final_table_ordered), "\n")
+
+```
+

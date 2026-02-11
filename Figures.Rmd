@@ -1,0 +1,2020 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-10-12"
+---
+
+```{r}
+# ============================
+# Entropy processing by genotype
+# ============================
+
+# Packages
+suppressPackageStartupMessages({
+  library(readxl)
+  library(writexl)
+  library(dplyr)
+  library(ggplot2)
+  library(purrr)
+  library(stringr)
+})
+
+# === Base paths ===
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+wb_path  <- file.path(base_dir, "all genotypes.xlsx")  # workbook name
+
+# List sheets (genotypes) in the workbook
+sheets <- readxl::excel_sheets(wb_path)
+
+# -------- Processing function per sheet/genotype --------
+process_genotype <- function(sheet_name) {
+  message("Processing genotype: ", sheet_name)
+
+  # Output folder per genotype
+  out_dir <- file.path(base_dir, sheet_name)
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+  # Read sheet
+  df <- read_excel(wb_path, sheet = sheet_name)
+
+  # Standardize expected column names and types
+  names(df) <- trimws(names(df))
+  if (!"Position" %in% names(df)) {
+    pos_col <- names(df)[str_detect(tolower(names(df)), "^pos")]
+    if (length(pos_col) == 1) names(df)[names(df) == pos_col] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent_col <- names(df)[str_detect(tolower(names(df)), "entropy")]
+    if (length(ent_col) == 1) names(df)[names(df) == ent_col] <- "Entropy"
+  }
+
+  # Convert types and keep valid rows
+  df <- df %>%
+    mutate(
+      Position = suppressWarnings(as.numeric(Position)),
+      # Supports decimal commas
+      Entropy  = as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE))
+    ) %>%
+    filter(!is.na(Position), !is.na(Entropy))
+
+  if (nrow(df) == 0) {
+    warning("Sheet ", sheet_name, " has no valid data. Skipping.")
+    return(NULL)
+  }
+
+  # Classification into groups (single column: Group)
+  df <- df %>%
+    mutate(
+      Group = case_when(
+        Entropy == 0 ~ "Conserved",
+        Entropy >= 0.1 & Entropy <= 0.5 ~ "Medium",
+        Entropy > 0.5 ~ "High",
+        TRUE ~ NA_character_
+      ),
+      Group = factor(Group, levels = c("Conserved", "Medium", "High"))
+    )
+
+  # ===== Export a SINGLE Excel file ordered by Position ASC =====
+  combined <- df %>%
+    filter(!is.na(Group)) %>%
+    arrange(Position) %>%                     # <- ascending order by Position
+    select(Position, Entropy, Group)
+
+  write_xlsx(
+    combined,
+    path = file.path(out_dir, paste0("entropy_by_group_", sheet_name, ".xlsx"))
+  )
+
+  # === Histogram (base R → PNG) ===
+  png(file.path(out_dir, paste0("hist_entropy_hp", sheet_name, ".png")),
+      width = 7, height = 5, units = "in", res = 300)
+  op <- par(cex.main = 1.6, cex.lab = 1.4, cex.axis = 1.2, mgp = c(2.2, 0.7, 0))
+  hist(df$Entropy,
+       breaks = seq(0, 1, by = 0.1),
+       main   = paste("HPV", sheet_name),
+       xlab   = "Shannon Entropy",
+       col    = "lightblue",
+       xlim   = c(0, 1),
+       xaxt   = "n",
+       freq   = TRUE)
+  axis(side = 1, at = seq(0, 1, by = 0.1))
+  par(op); dev.off()
+
+  # === Entropy profile (ggplot) ===
+  p_profile <- ggplot(df, aes(x = Position, y = Entropy)) +
+    geom_line(color = "coral", linewidth = 0.7) +
+    scale_x_continuous(breaks = scales::breaks_width(500)) +
+    labs(title = paste("HPV", sheet_name),
+         x = "Position", y = "Shannon Entropy") +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 22),
+      axis.title.x = element_text(size = 16, face = "bold"),
+      axis.title.y = element_text(size = 16, face = "bold"),
+      axis.text.x  = element_text(size = 12),
+      axis.text.y  = element_text(size = 12),
+      panel.grid.minor = element_blank()
+    )
+  ggsave(filename = file.path(out_dir, paste0("entropy_profile_hp", sheet_name, ".png")),
+         plot = p_profile, width = 8, height = 5, dpi = 300)
+
+  # === Bar chart by group ===
+  group_count <- df %>%
+    filter(!is.na(Group)) %>%
+    count(Group) %>%
+    mutate(
+      Range = case_when(
+        Group == "Conserved" ~ "Entropy = 0",
+        Group == "Medium"    ~ "Entropy 0.1 - 0.5",
+        Group == "High"      ~ "Entropy > 0.5"
+      ),
+      Label = paste0(Group, "\n(", Range, ")"),
+      Label = factor(Label, levels = Label)
+    )
+
+  p_bar <- ggplot(group_count, aes(x = Label, y = n, fill = Group)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n), vjust = -0.5, size = 3) +
+    scale_fill_manual(values = c("Conserved" = "#66c2a5",
+                                 "Medium"    = "#fc8d62",
+                                 "High"      = "#8da0cb")) +
+    labs(title = paste("Classification of positions based on entropy (HPV", sheet_name, ")"),
+         x = NULL, y = "Number of positions") +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x  = element_text(size = 10, face = "bold"),
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+  ggsave(filename = file.path(out_dir, paste0("entropy_groups_bar_hp", sheet_name, ".png")),
+         plot = p_bar, width = 6.5, height = 4.2, dpi = 300)
+
+  # === Summary statistics + counts (Excel) ===
+  entropy_summary <- as.data.frame(t(summary(df$Entropy))); rownames(entropy_summary) <- NULL
+  group_counts_export <- as.data.frame(table(df$Group)); colnames(group_counts_export) <- c("Group", "Count")
+
+  write_xlsx(
+    list("Entropy_Summary" = entropy_summary,
+         "Group_Counts"    = group_counts_export),
+    path = file.path(out_dir, paste0("entropy_summary_and_counts_", sheet_name, ".xlsx"))
+  )
+
+  # Return summary for master table
+  tibble(
+    Genotype       = sheet_name,
+    n_positions    = nrow(df),
+    pct_conserved  = mean(df$Entropy == 0) * 100,
+    pct_high       = mean(df$Entropy > 0.5) * 100,
+    entropy_median = median(df$Entropy),
+    entropy_IQR    = IQR(df$Entropy),
+    entropy_max    = max(df$Entropy)
+  )
+}
+
+# -------- Run for all sheets and export master summary --------
+master_summary <- map_dfr(
+  sheets,
+  ~tryCatch(process_genotype(.x), error = function(e) { warning(e); NULL })
+)
+
+if (!is.null(master_summary) && nrow(master_summary) > 0) {
+  write_xlsx(master_summary, file.path(base_dir, "master_summary_all_genotypes.xlsx"))
+}
+
+message("Done! Processed genotypes: ", paste(sheets, collapse = ", "))
+
+```
+
+```{r}
+# install.packages("magick") # if you don't have it installed
+library(magick)
+
+# Base folder containing the genotype subdirectories 16, 18, 31, ..., 156
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+
+# Histogram files generated: hist_entropy_hpX.png
+files_all <- list.files(base_dir, pattern = "^hist_entropy_hp.*\\.png$",
+                        recursive = TRUE, full.names = TRUE)
+
+# Desired genotype order (adjust if you add/remove sheets)
+order_sheets <- c("16","18","31","33","35","52","56","58",
+                  "59","66","67","68","73","82","87","156")
+
+# Reorder files according to the order above
+ordered_files <- unlist(lapply(order_sheets, function(s){
+  # search for a file ending in hp<s>.png within any subfolder
+  idx <- grepl(paste0("hist_entropy_hp", s, "\\.png$"), files_all)
+  files_all[idx]
+}))
+
+# Filter out NAs (in case some genotype does not have an image yet)
+ordered_files <- ordered_files[!is.na(ordered_files)]
+
+stopifnot(length(ordered_files) > 0)
+
+# Read images
+imgs <- image_read(ordered_files)
+
+# Normalize size so all panels match (adjust width/height as needed)
+# - If you specify only width ("1400"), height is preserved proportionally
+imgs <- image_scale(imgs, "1400")
+
+# Grid parameters
+ncol <- 4  # number of columns in the mosaic (you can use 3, 4, or 5)
+# Split into rows
+rows <- split(seq_along(imgs), ceiling(seq_along(imgs) / ncol))
+
+# Append within each row and then stack rows
+row_imgs <- lapply(rows, function(ix) image_append(imgs[ix], stack = FALSE))
+mosaic   <- image_append(image_join(row_imgs), stack = TRUE)
+
+# (Optional) add a soft border
+mosaic <- image_border(mosaic, color = "white", geometry = "10x10")
+
+# Export final image (PNG)
+out_png  <- file.path(base_dir, "Todos_hist_entropy_grid.png")
+image_write(mosaic, out_png, format = "png")
+
+# (Optional) also export as TIFF 600 dpi (often recommended by journals)
+out_tif  <- file.path(base_dir, "Todos_hist_entropy_grid.tiff")
+image_write(mosaic, out_tif, format = "tiff", density = "600x600")
+
+
+```
+
+
+
+
+```{r}
+# ============================
+# Add 'Gen' column to entropy_by_group_* without an external file
+# ============================
+
+suppressPackageStartupMessages({
+  library(readxl)
+  library(writexl)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(purrr)
+})
+
+# ---- Base path where folders 16,18,31,... are located ----
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+
+# -------------------------------------------------------------------
+# 1) COORDINATE TABLE (EDIT YOUR RANGES HERE)
+#    - Genotype column: "16","18","31","33","35","52","56","58","59","66","67","68","73","82","87","156"
+#    - Gene columns: E1, E2, E4, E5, E6, E7, L1, L2
+#    - Accepts one OR multiple ranges per cell (separated by ; or ,), e.g. "879-2813; 2900-3000"
+# -------------------------------------------------------------------
+gene_coords <- tibble::tribble(
+  ~Genotipo, ~E1,          ~E2,          ~E4,          ~E5,          ~E6,        ~E7,        ~L1,         ~L2,
+  "16",      "865-2814",   "2756-3853",  "865-3620",   "3850-4101",  "104-559",  "562-858",  "5639-7156", "4237-5658",
+  "18",      "914-2887",   "2817-3914",  "912-3684",   "3936-4157",  "105-581",  "590-907",  "5631-7123", "4244-5632",
+  "31",      "862-2751",   "2693-3811",  "862-3578",   "3816-4070",  "108-557",  "560-856",  "5552-7066", "4171-5571",
+  "33",      "879-2813",   "2749-3810",  "879-3577",   "3854-4081",  "109-558",  "573-866",  "5594-7093", "4210-5613",
+  "35",      "868-2781",   "2717-3817",  "868-3319",   "3814-4065",  "110-559",  "562-861",  "5601-7109", "4211-5620",
+  "58",      "883-2817",   "2753-3829",  "883-3605",   "3892-4122",  "110-559",  "574-870",  "5643-7139", "4244-5662",
+  "59",      "872-2806",   "2748-3848",  "872-3615",   "3908-4129",  "55-537",   "542-865",  "5606-7132", "4231-5625",
+  "66",      "895-2789",   "2729-3838",  "895-3605",   "N.A",        "102-569",  "572-889",  "5647-7158", "4272-5666",
+  "67",      "875-2785",   "2721-3827",  "875-3591",   "3900-4121",  "102-551",  "563-862",  "5616-7118", "4238-5635",
+  "68",      "823-2745",   "2687-3784",  "823-3551",   "3830-4051",  "1-477",    "484-816",  "5488-7005", "4098-5507",
+  "73",      "850-2802",   "2744-3793",  "850-3560",   "3813-4037",  "102-548",  "550-843",  "5494-7005", "4083-5510",
+  "82",      "876-2804",   "2746-3825",  "876-3601",   "N.A",        "102-557",  "565-867",  "5570-7081", "4168-5589",
+  "87",      "819-2771",   "2713-3840",  "819-3607",   "4172-4315",  "105-551",  "527-817",  "5756-7270", "4360-5778",
+  "156",     "805-2631",   "2567-3766",  "805-3530",   "N.A",        "106-528",  "525-818",  "5360-6889", "3775-5349"
+)
+
+# -------------------------------------------------------------------
+
+# 2) Prepare coordinates (wide -> long), clean and expand multiple ranges
+# -------------------------------------------------------------------
+coords_long <- gene_coords %>%
+  mutate(across(everything(), ~trimws(as.character(.)))) %>%
+  pivot_longer(cols = -Genotipo, names_to = "Gen", values_to = "range") %>%
+  filter(!is.na(range), range != "") %>%
+  mutate(range = gsub("\\s+", "", range)) %>%
+  separate_rows(range, sep = "[;,]") %>%
+  filter(range != "", !range %in% c("0","0-0","0 0")) %>%
+  mutate(
+    # Allows formats like "102-551" (OK)
+    start = suppressWarnings(as.numeric(sub("-.*$", "", range))),
+    end   = suppressWarnings(as.numeric(sub("^.*-", "", range)))
+  ) %>%
+  filter(!is.na(start), !is.na(end), end >= start) %>%
+  transmute(Genotype = Genotipo, Gen, start, end)
+
+# -------------------------------------------------------------------
+# 3) Priority order in case of overlaps (edit if you want a different rule)
+#    If a Position falls into multiple genes, the earliest in this list wins
+# -------------------------------------------------------------------
+gene_priority <- c("E6","E7","E1","E2","E4","E5","L2","L1")
+coords_long$Gen <- factor(coords_long$Gen, levels = gene_priority)
+
+# -------------------------------------------------------------------
+# 4) Annotate each entropy_by_group_* file in all genotype folders
+# -------------------------------------------------------------------
+genotype_dirs <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE)
+
+annotate_one_genotype <- function(gdir) {
+  gname <- basename(gdir)
+
+  # input file: entropy_by_group_<gname>.xlsx (or similar)
+  f <- list.files(gdir, pattern = "^entropy_by_group_.*\\.xlsx$", full.names = TRUE)
+  if (length(f) == 0) {
+    message("⚠ No entropy_by_group_*.xlsx found in: ", gdir)
+    return(NULL)
+  }
+
+  df <- readxl::read_excel(f[1])
+  names(df) <- trimws(names(df))
+
+  # standardize expected column names
+  if (!"Position" %in% names(df)) {
+    pos_col <- names(df)[str_detect(tolower(names(df)), "^pos")]
+    if (length(pos_col) == 1) names(df)[names(df) == pos_col] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent_col <- names(df)[str_detect(tolower(names(df)), "entropy")]
+    if (length(ent_col) == 1) names(df)[names(df) == ent_col] <- "Entropy"
+  }
+  if (!"Group" %in% names(df)) {
+    grp_col <- names(df)[str_detect(tolower(names(df)), "^group")]
+    if (length(grp_col) == 1) names(df)[names(df) == grp_col] <- "Group"
+  }
+
+  df <- df %>%
+    mutate(
+      Position = suppressWarnings(as.numeric(Position)),
+      Entropy  = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE))),
+      Group    = as.character(Group)
+    ) %>%
+    filter(!is.na(Position), !is.na(Entropy)) %>%
+    arrange(Position)
+
+  # coordinates for the current genotype
+  cg <- coords_long %>% filter(Genotype == gname)
+  if (nrow(cg) == 0) {
+    message("⚠ No coordinates found for genotype ", gname, " (in the embedded table). Gen will be set to NA.")
+    df$Gen <- NA_character_
+  } else {
+    # priority assignment: iterate in gene_priority order
+    df$Gen <- NA_character_
+    cg <- cg %>% arrange(Gen)  # respects factor order (priority)
+    for (i in seq_len(nrow(cg))) {
+      idx <- df$Position >= cg$start[i] & df$Position <= cg$end[i]
+      df$Gen[idx] <- as.character(cg$Gen[i])
+    }
+  }
+
+  # If you prefer to label out-of-range as "Intergenic", uncomment:
+  # df$Gen[is.na(df$Gen)] <- "Intergenic"
+
+  # order and refactor Group
+  df <- df %>%
+    mutate(Group = factor(Group, levels = c("Conserved","Medium","High"))) %>%
+    arrange(Position)
+
+  # output
+  out_file <- file.path(gdir, paste0("entropy_by_group_", gname, "_with_gen.xlsx"))
+  writexl::write_xlsx(df, out_file)
+  message("✔ Saved: ", out_file)
+  invisible(df)
+}
+
+# Run
+annotated <- purrr::map(genotype_dirs, ~tryCatch(annotate_one_genotype(.x),
+                                                 error = function(e){ warning(e); NULL }))
+
+```
+
+
+
+```{r}
+# --- A) Setup & bulk read ---
+suppressPackageStartupMessages({
+  library(readxl); library(writexl); library(dplyr); library(ggplot2)
+  library(purrr);  library(stringr); library(tidyr);  library(zoo)
+})
+
+# Base path (your "Todos" folder)
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+fig_dir  <- file.path(base_dir, "Global", "figures")
+tab_dir  <- file.path(base_dir, "Global", "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Detect genotype subfolders and *_with_gen.xlsx files
+genotype_dirs <- list.dirs(base_dir, full.names = TRUE, recursive = FALSE)
+
+read_with_gen <- function(gdir){
+  g <- basename(gdir)
+  f <- list.files(gdir, pattern = "_with_gen\\.xlsx$", full.names = TRUE)
+  if (length(f)==0) return(NULL)
+  df <- read_excel(f[1])
+  names(df) <- trimws(names(df))
+
+  # Standardize expected column names
+  if (!"Position" %in% names(df)) {
+    pos <- names(df)[str_detect(tolower(names(df)), "^pos")]
+    if (length(pos)==1) names(df)[names(df)==pos] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent <- names(df)[str_detect(tolower(names(df)), "entropy")]
+    if (length(ent)==1) names(df)[names(df)==ent] <- "Entropy"
+  }
+  if (!"Group" %in% names(df)) {
+    grp <- names(df)[str_detect(tolower(names(df)), "^group")]
+    if (length(grp)==1) names(df)[names(df)==grp] <- "Group"
+  }
+  stopifnot("Gen" %in% names(df))
+
+  df %>%
+    mutate(
+      Genotype = g,
+      Position = suppressWarnings(as.numeric(Position)),
+      Entropy  = suppressWarnings(as.numeric(Entropy)),
+      Group    = factor(as.character(Group), levels = c("Conserved","Medium","High")),
+      Gen      = as.character(Gen)
+    ) %>%
+    filter(!is.na(Position), !is.na(Entropy)) %>%
+    arrange(Position)
+}
+
+ent_all <- map(genotype_dirs, read_with_gen) %>% compact() %>% bind_rows()
+stopifnot(nrow(ent_all) > 0)
+ent_all$Genotype <- factor(ent_all$Genotype, levels = sort(unique(ent_all$Genotype)))
+
+```
+
+
+
+```{r}
+# --- C1) ECDF by genotype ---
+p_ecdf <- ggplot(ent_all, aes(Entropy, color = Genotype)) +
+  stat_ecdf(geom = "step") +
+  coord_cartesian(xlim = c(0,1)) +
+  labs(title="ECDF of Shannon Entropy by genotype",
+       x="Shannon Entropy", y="Cumulative proportion") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"ecdf_by_genotype.png"), p_ecdf, width=9, height=6, dpi=300)
+
+```
+
+
+
+```{r}
+# --- C2) Density facets ---
+p_dens <- ggplot(ent_all, aes(Entropy)) +
+  geom_density() +
+  facet_wrap(~ Genotype, ncol=4) +
+  coord_cartesian(xlim=c(0,1)) +
+  labs(title="Entropy density by genotype", x="Shannon Entropy", y="Density") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"density_facet_by_genotype.png"), p_dens, width=10, height=8, dpi=300)
+
+
+```
+
+
+```{r}
+
+# --- C2) Density facets ---
+p_dens <- ggplot(ent_all, aes(Entropy)) +
+  geom_density() +
+  facet_wrap(~ Genotype, ncol=4) +
+  coord_cartesian(xlim=c(0,1)) +
+  labs(title="Entropy density by genotype", x="Shannon Entropy", y="Density") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"density_facet_by_genotype.png"), p_dens, width=10, height=8, dpi=300)
+
+```
+
+
+```{r}
+# --- D) Stacked bars of class composition ---
+class_prop <- ent_all %>%
+  count(Genotype, Group) %>%
+  group_by(Genotype) %>%
+  mutate(pct = n/sum(n)*100) %>%
+  ungroup()
+writexl::write_xlsx(class_prop, file.path(tab_dir,"class_composition_by_genotype.xlsx"))
+
+p_stack <- ggplot(class_prop, aes(Genotype, pct, fill=Group)) +
+  geom_col() +
+  labs(title="Entropy-class composition by genotype", x="Genotype", y="% of positions") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"class_composition_by_genotype.png"), p_stack, width=10, height=5.5, dpi=300)
+
+
+```
+
+
+```{r}
+# --- E1) Manhattan-like ---
+p_manh <- ggplot(ent_all, aes(Position, Entropy, color=Group)) +
+  geom_point(alpha=.5, size=.6) +
+  geom_hline(yintercept=c(0.1,0.5), linetype="dashed") +
+  facet_wrap(~ Genotype, scales="free_x", ncol=4) +
+  labs(title="Entropy across genome by genotype",
+       x="Position", y="Shannon Entropy") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"manhattan_like.png"), p_manh, width=12, height=8.5, dpi=300)
+
+
+```
+
+
+```{r}
+# --- E1) Manhattan-like ---
+p_manh <- ggplot(ent_all, aes(Position, Entropy, color=Group)) +
+  geom_point(alpha=.5, size=.6) +
+  geom_hline(yintercept=c(0.1,0.5), linetype="dashed") +
+  facet_wrap(~ Genotype, scales="free_x", ncol=4) +
+  labs(title="Entropy across genome by genotype",
+       x="Position", y="Shannon Entropy") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"manhattan_like.png"), p_manh, width=12, height=8.5, dpi=300)
+
+
+```
+
+
+```{r}
+# --- E2) Rolling mean (k=51) ---
+k <- 51
+ent_roll <- ent_all %>%
+  arrange(Genotype, Position) %>%
+  group_by(Genotype) %>%
+  mutate(Entropy_smooth = zoo::rollapply(Entropy, k, mean, align="center", fill=NA)) %>%
+  ungroup()
+
+p_roll <- ggplot(ent_roll, aes(Position, Entropy_smooth)) +
+  geom_line() +
+  facet_wrap(~ Genotype, scales="free_x", ncol=4) +
+  labs(title=paste0("Rolling mean (k=",k,") by genotype"),
+       x="Position", y="Rolling mean entropy") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"rolling_mean_facet.png"), p_roll, width=12, height=8.5, dpi=300)
+
+
+```
+
+
+```{r}
+# --- F) High-entropy continuous blocks ---
+high_blocks <- ent_all %>%
+  filter(Group=="High") %>%
+  arrange(Genotype, Position) %>%
+  group_by(Genotype) %>%
+  mutate(d = c(NA, diff(Position)),
+         grp = cumsum(ifelse(is.na(d) | d!=1, 1, 0))) %>%
+  group_by(Genotype, grp) %>%
+  summarise(start=min(Position), end=max(Position),
+            len=end-start+1, peak=max(Entropy),
+            .groups="drop")
+writexl::write_xlsx(high_blocks, file.path(tab_dir,"high_blocks_all.xlsx"))
+
+p_len <- ggplot(high_blocks, aes(len)) +
+  geom_histogram(bins=30) +
+  labs(title="Length distribution of high-entropy blocks (>0.5)",
+       x="Block length (bp)", y="Count") +
+  theme_minimal()
+ggsave(file.path(fig_dir,"high_blocks_length_hist.png"), p_len, width=7.5, height=5.5, dpi=300)
+
+```
+
+
+```{r}
+# --- G1) Violin by gene (global) ---
+p_violin_gene <- ggplot(ent_all %>% filter(!is.na(Gen) & Gen!=""),
+                        aes(Gen, Entropy)) +
+  geom_violin(trim=FALSE, alpha=.7) +
+  geom_boxplot(width=.12, outlier.shape = NA, fill="white") +
+  coord_cartesian(ylim=c(0,1)) +
+  labs(title="Entropy distribution by gene (all genotypes)",
+       x="Gene", y="Shannon Entropy") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"violin_by_gene_global.png"),
+       p_violin_gene, width=8.5, height=5.5, dpi=300)
+
+```
+
+
+```{r}
+# --- G2) Heatmap Genotype × Gene (Mean Entropy, 0–1) ---
+# Requiere en 'ent_all' las columnas: Genotype, Gen, Entropy
+
+library(dplyr)
+library(ggplot2)
+library(writexl)
+library(scales)
+
+# (Optional) fixed gene order
+gene_order <- c("E1","E2","E4","E5","E6","E7","L1","L2")
+
+gene_meanH <- ent_all %>%
+  filter(!is.na(Gen), Gen != "", !is.na(Entropy)) %>%
+  mutate(
+    Gen = factor(Gen, levels = intersect(gene_order, unique(Gen)))  # use fixed order if applicable
+  ) %>%
+  group_by(Genotype, Gen) %>%
+  summarise(
+    mean_entropy = mean(Entropy, na.rm = TRUE),
+    n_positions  = n(),
+    .groups = "drop"
+  )
+
+# Export table
+writexl::write_xlsx(gene_meanH, file.path(tab_dir, "meanEntropy_Gene_by_Genotype.xlsx"))
+
+# Heatmap (0–1)
+p_heat_mean <- ggplot(gene_meanH, aes(x = Gen, y = Genotype, fill = mean_entropy)) +
+  geom_tile() +
+  scale_fill_viridis_c(limits = c(0, 1), oob = squish, name = "Mean H") +
+  labs(
+    title = "Mean Shannon entropy by Gene × Genotype",
+    x = "Gene", y = "Genotype"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = .5, face = "bold"))
+
+ggsave(
+  file.path(fig_dir, "heatmap_gene_x_genotype_meanEntropy.png"),
+  p_heat_mean, width = 8.5, height = 6.5, dpi = 300
+)
+
+```
+
+
+```{r}
+# --- H) Fisher enrichment of High by Gene (per genotype) ---
+fisher_results <- ent_all %>%
+  filter(!is.na(Gen) & Gen!="") %>%
+  mutate(isHigh = Group=="High") %>%
+  group_by(Genotype, Gen) %>%
+  summarise(High = sum(isHigh), NonHigh = sum(!isHigh), .groups="drop") %>%
+  group_by(Genotype) %>%
+  mutate(
+    totalHigh      = sum(High),
+    totalNonHigh   = sum(NonHigh),
+    High_other     = totalHigh - High,
+    NonHigh_other  = totalNonHigh - NonHigh
+  ) %>%
+  rowwise() %>%
+  mutate(p_value = fisher.test(matrix(c(High, NonHigh, High_other, NonHigh_other), nrow=2))$p.value) %>%
+  ungroup() %>%
+  group_by(Genotype) %>%
+  mutate(p_adj_BH = p.adjust(p_value, method="BH")) %>%
+  ungroup()
+writexl::write_xlsx(fisher_results, file.path(tab_dir,"fisher_enrichment_gene_high.xlsx"))
+
+```
+
+```{r}
+
+# ============================================================
+# Gene-level metrics FOR EACH GENOTYPE (no plots)
+# Reads:  .../Todos/<genotype>/entropy_by_group_<genotype>_with_gen.xlsx
+# Writes:
+#   - .../Todos/<genotype>/metrics_by_gene_HP<genotype>.xlsx
+#   - .../Todos/master_metrics_by_gene_all_genotypes.xlsx
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(stringr); library(writexl)
+})
+
+# -------- PATHS --------
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"  # <- NOTE: 'Todo' (singular)
+
+# Optional gene order in tables
+gene_order <- c("E1","E2","E4","E5","E6","E7","L1","L2")
+
+# -------- Function: read and clean one genotype --------
+read_genotype_df <- function(gdir) {
+  gt <- basename(gdir)  # folder name = genotype (e.g., "58")
+
+  # 1) Exact match: entropy_by_group_<genotype>_with_gen.xlsx
+  exact_file <- file.path(gdir, sprintf("entropy_by_group_%s_with_gen.xlsx", gt))
+  if (file.exists(exact_file)) {
+    f_path <- exact_file
+  } else {
+    # 2) Fallback: any *_with_gen.xlsx file inside the folder
+    cand <- list.files(gdir, pattern = "_with_gen\\.xlsx$", full.names = TRUE)
+    if (length(cand) == 0) return(NULL)
+    # If multiple, prioritize the one containing the genotype in the filename
+    idx <- which(stringr::str_detect(basename(cand), paste0("\\b", gt, "\\b")))
+    f_path <- if (length(idx) >= 1) cand[idx[1]] else cand[1]
+  }
+
+  df <- readxl::read_excel(f_path)
+  names(df) <- trimws(names(df))
+
+  # Standardize expected column names
+  if (!"Position" %in% names(df)) {
+    pos <- names(df)[stringr::str_detect(tolower(names(df)), "^pos")]
+    if (length(pos) == 1) names(df)[names(df) == pos] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent <- names(df)[stringr::str_detect(tolower(names(df)), "entropy")]
+    if (length(ent) == 1) names(df)[names(df) == ent] <- "Entropy"
+  }
+  if (!"Gen" %in% names(df)) stop("Missing 'Gen' column in: ", f_path)
+
+  df %>%
+    dplyr::mutate(
+      Genotype = gt,
+      Position = suppressWarnings(as.numeric(Position)),
+      Entropy  = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE))),
+      Gen      = as.character(Gen)
+    ) %>%
+    dplyr::filter(!is.na(Position), !is.na(Entropy), !is.na(Gen), Gen != "") %>%
+    dplyr::arrange(Position)
+}
+
+# -------- Function: gene-level metrics for one genotype DF --------
+summarise_metrics_by_gene <- function(df_one_gt) {
+  # If Group does not exist, compute it (for %medium/%high/%conserved)
+  if (!"Group" %in% names(df_one_gt)) {
+    df_one_gt <- df_one_gt %>%
+      dplyr::mutate(
+        Group = dplyr::case_when(
+          Entropy == 0 ~ "Conserved",
+          Entropy >= 0.1 & Entropy <= 0.5 ~ "Medium",
+          Entropy > 0.5 ~ "High",
+          TRUE ~ NA_character_
+        )
+      )
+  }
+
+  out <- df_one_gt %>%
+    dplyr::group_by(Genotype, Gen) %>%
+    dplyr::summarise(
+      n_positions     = dplyr::n(),
+      mean_entropy    = mean(Entropy),
+      median_entropy  = median(Entropy),
+      sd_entropy      = sd(Entropy),
+      IQR_entropy     = IQR(Entropy),
+      MAD_entropy     = mad(Entropy, constant = 1, na.rm = TRUE),
+      q05             = as.numeric(stats::quantile(Entropy, 0.05, na.rm = TRUE)),
+      q25             = as.numeric(stats::quantile(Entropy, 0.25, na.rm = TRUE)),
+      q75             = as.numeric(stats::quantile(Entropy, 0.75, na.rm = TRUE)),
+      q95             = as.numeric(stats::quantile(Entropy, 0.95, na.rm = TRUE)),
+      min_entropy     = min(Entropy),
+      max_entropy     = max(Entropy),
+      pct_conserved   = mean(Entropy == 0) * 100,
+      pct_medium      = mean(Entropy >= 0.1 & Entropy <= 0.5) * 100,
+      pct_high        = mean(Entropy > 0.5) * 100,
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      entropy_cv         = dplyr::if_else(mean_entropy > 0, sd_entropy / mean_entropy, NA_real_),
+      conservation_index = 1 - mean_entropy
+    )
+
+  # Sort genes if applicable
+  genes_present <- intersect(gene_order, unique(out$Gen))
+  if (length(genes_present) > 0) {
+    out <- out %>% dplyr::mutate(Gen = factor(Gen, levels = genes_present)) %>%
+      dplyr::arrange(Gen)
+  } else {
+    out <- out %>% dplyr::arrange(Gen)
+  }
+
+  out
+}
+
+# --------- Loop through ALL genotype folders ----------
+genotype_dirs <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE)
+
+master_tbl <- list()
+
+for (gdir in genotype_dirs) {
+  # Skip base folder if list.dirs returns it as well
+  if (normalizePath(gdir) == normalizePath(base_dir)) next
+
+  df_gt <- try(read_genotype_df(gdir), silent = TRUE)
+  if (inherits(df_gt, "try-error") || is.null(df_gt) || nrow(df_gt) == 0) {
+    message("Skipping ", basename(gdir), " (no valid data or no _with_gen file).")
+    next
+  }
+  gt <- unique(df_gt$Genotype)[1]
+
+  # Compute gene-level metrics
+  met_gt <- summarise_metrics_by_gene(df_gt)
+  master_tbl[[gt]] <- met_gt
+
+  # Export per genotype
+  out_path <- file.path(gdir, sprintf("metrics_by_gene_HP%s.xlsx", gt))
+  writexl::write_xlsx(met_gt, out_path)
+  message("✔ Saved: ", out_path)
+}
+
+# --------- Export combined master table ----------
+if (length(master_tbl) > 0) {
+  master_df <- dplyr::bind_rows(master_tbl)
+  writexl::write_xlsx(master_df,
+                      file.path(base_dir, "master_metrics_by_gene_all_genotypes.xlsx"))
+  message("✔ Master: ", file.path(base_dir, "master_metrics_by_gene_all_genotypes.xlsx"))
+} else {
+  message("No master file generated: no valid genotypes found.")
+}
+
+```
+
+
+```{r}
+# --- I1) Relative position curves (0..1) ---
+rel_binned <- ent_all %>%
+  group_by(Genotype) %>%
+  mutate(Position_rel = Position / max(Position, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(bin = cut(Position_rel, breaks=seq(0,1,by=0.01), include.lowest=TRUE, right=FALSE))
+
+rel_prop <- rel_binned %>%
+  group_by(Genotype, bin) %>%
+  summarise(pct_high = mean(Group=="High")*100, .groups="drop") %>%
+  mutate(bin_mid = as.numeric(sub("\\[(.*),(.*)\\)", "\\1", as.character(bin))) + 0.005)
+writexl::write_xlsx(rel_prop, file.path(tab_dir,"relative_pctHigh_by_genotype.xlsx"))
+
+p_rel <- ggplot(rel_prop, aes(bin_mid, pct_high, color=Genotype)) +
+  geom_line(alpha=.9) +
+  labs(title="Relative-position entropy (High %) by genotype",
+       x="Relative genome position (0–1)", y="% High") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"relative_position_curves.png"), p_rel, width=10, height=6, dpi=300)
+
+```
+
+
+```{r}
+# --- I2) Consensus hotspot map ---
+thr_cons <- 10  # consider a bin "hot" if >10% High in that bin
+
+consensus <- rel_prop %>%
+  group_by(bin_mid) %>%
+  summarise(frac_genotypes_hot = mean(pct_high > thr_cons), .groups = "drop")
+
+writexl::write_xlsx(consensus, file.path(tab_dir, "relative_consensus_hot_fraction.xlsx"))
+
+p_cons <- ggplot(consensus, aes(bin_mid, frac_genotypes_hot)) +
+  geom_line() +
+  labs(title = paste0("Consensus hotspot map (> ", thr_cons, " % High)"),
+       x = "Relative genome position (0–1)",
+       y = "Fraction of genotypes hot") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = .5, face = "bold"))
+
+ggsave(file.path(fig_dir, "relative_consensus_hotspots.png"),
+       p_cons, width = 10, height = 5.5, dpi = 300)
+
+
+```
+
+
+```{r}
+# --- J) Proportion ≥ threshold curves ---
+ths <- seq(0,1,by=0.01)
+th_curves <- ent_all %>%
+  group_by(Genotype) %>%
+  do({ tibble(th=ths, prop = sapply(ths, function(t) mean(.$Entropy >= t, na.rm=TRUE))) }) %>%
+  ungroup()
+writexl::write_xlsx(th_curves, file.path(tab_dir,"prop_over_threshold_curves.xlsx"))
+
+p_thr <- ggplot(th_curves, aes(th, prop)) +
+  geom_line() +
+  facet_wrap(~ Genotype, ncol=4) +
+  labs(title="Proportion of positions ≥ threshold by genotype",
+       x="Threshold", y="Proportion") +
+  theme_minimal(base_size=12) +
+  theme(plot.title = element_text(hjust=.5, face="bold"))
+ggsave(file.path(fig_dir,"prop_over_threshold.png"), p_thr, width=12, height=8.5, dpi=300)
+
+```
+
+```{r}
+# ======================================================
+# Variability by gene and by genotype (intra-genotype)
+# Reads: .../Todos/<genotype>/entropy_by_group_<genotype>_with_gen.xlsx
+# Saves tables and figures inside each genotype folder
+# ======================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(ggplot2)
+  library(purrr);  library(stringr); library(writexl)
+})
+
+# ---------- Paths ----------
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+
+# Optional gene order in figures (uses only genes that are present)
+gene_order <- c("E1","E2","E4","E5","E6","E7","L1","L2")
+
+# ---------- Safe read function ----------
+read_with_gen <- function(gdir){
+  g <- basename(gdir)
+  f <- list.files(gdir, pattern = "_with_gen\\.xlsx$", full.names = TRUE)
+  if (length(f) == 0) return(NULL)
+
+  df <- readxl::read_excel(f[1])
+  names(df) <- trimws(names(df))
+
+  # Standardize expected column names
+  if (!"Position" %in% names(df)) {
+    pos <- names(df)[stringr::str_detect(tolower(names(df)), "^pos")]
+    if (length(pos) == 1) names(df)[names(df) == pos] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent <- names(df)[stringr::str_detect(tolower(names(df)), "entropy")]
+    if (length(ent) == 1) names(df)[names(df) == ent] <- "Entropy"
+  }
+  if (!"Gen" %in% names(df)) stop("Missing 'Gen' column in: ", f[1])
+
+  # If Group does not exist, compute it so we can measure %High and %Conserved
+  if (!"Group" %in% names(df)) {
+    df$Group <- NA_character_
+    df$Group[df$Entropy == 0]                       <- "Conserved"
+    df$Group[df$Entropy >= 0.1 & df$Entropy <= 0.5] <- "Medium"
+    df$Group[df$Entropy > 0.5]                      <- "High"
+  }
+
+  df %>%
+    dplyr::mutate(
+      Genotype = g,
+      Position = suppressWarnings(as.numeric(Position)),
+      Entropy  = suppressWarnings(as.numeric(Entropy)),
+      Gen      = as.character(Gen),
+      Group    = factor(Group, levels = c("Conserved","Medium","High"))
+    ) %>%
+    dplyr::filter(!is.na(Position), !is.na(Entropy), !is.na(Gen), Gen != "") %>%
+    dplyr::arrange(Position)
+}
+
+# ---------- Process ALL genotypes ----------
+genotype_dirs <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE)
+
+purrr::walk(genotype_dirs, function(gdir){
+
+  df <- read_with_gen(gdir)
+  if (is.null(df) || nrow(df) == 0) {
+    message("Skipping ", basename(gdir), " (no data).")
+    return(invisible(NULL))
+  }
+  gt <- unique(df$Genotype)[1]
+
+  # Output subfolder
+  fig_dir <- file.path(gdir, "figures_intra_variability")
+  dir.create(fig_dir, showWarnings = FALSE)
+
+  # ---- Summary by GENE ----
+  gene_summary <- df %>%
+    dplyr::group_by(Gen) %>%
+    dplyr::summarise(
+      n              = dplyr::n(),
+      mean_entropy   = mean(Entropy, na.rm = TRUE),
+      median_entropy = median(Entropy, na.rm = TRUE),
+      IQR_entropy    = IQR(Entropy, na.rm = TRUE),
+      pct_high       = mean(Group == "High", na.rm = TRUE) * 100,
+      pct_conserved  = mean(Group == "Conserved", na.rm = TRUE) * 100,
+      .groups = "drop"
+    )
+
+  # Ordering and factors
+  genes_present <- intersect(gene_order, sort(unique(gene_summary$Gen)))
+  if (length(genes_present) == 0) genes_present <- sort(unique(gene_summary$Gen))
+  gene_summary$Gen <- factor(gene_summary$Gen, levels = genes_present)
+
+  # Export summary table
+  writexl::write_xlsx(gene_summary, file.path(gdir, sprintf("intra_gene_variability_summary_%s.xlsx", gt)))
+
+  # ---- 1) Bar plot: mean entropy (0–1) by gene (sorted) ----
+  p_mean <- gene_summary %>%
+    dplyr::arrange(dplyr::desc(mean_entropy)) %>%
+    dplyr::mutate(Gen = factor(Gen, levels = Gen)) %>%
+    ggplot2::ggplot(ggplot2::aes(x = Gen, y = mean_entropy)) +
+    ggplot2::geom_col(fill = "#4C78A8") +
+    ggplot2::geom_text(ggplot2::aes(label = round(mean_entropy, 3)), vjust = -0.4, size = 3) +
+    ggplot2::coord_cartesian(ylim = c(0, max(0.02, max(gene_summary$mean_entropy, na.rm=TRUE) * 1.12))) +
+    ggplot2::labs(title = paste0("Mean Shannon entropy by gene — HPV", gt),
+         x = "Gene", y = "Mean entropy (0–1)") +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+          axis.title.x = ggplot2::element_text(face = "bold"),
+          axis.title.y = ggplot2::element_text(face = "bold"))
+  ggplot2::ggsave(file.path(fig_dir, sprintf("bar_mean_entropy_by_gene_HP%s.png", gt)),
+         p_mean, width = 7.5, height = 5, dpi = 300)
+
+  # ---- 2) Bar plot: %High (>0.5) by gene (sorted) ----
+  p_high <- gene_summary %>%
+    dplyr::arrange(dplyr::desc(pct_high)) %>%
+    dplyr::mutate(Gen = factor(Gen, levels = Gen)) %>%
+    ggplot2::ggplot(ggplot2::aes(x = Gen, y = pct_high)) +
+    ggplot2::geom_col(fill = "#F58518") +
+    ggplot2::geom_text(ggplot2::aes(label = paste0(round(pct_high,1), "%")), vjust = -0.4, size = 3) +
+    ggplot2::coord_cartesian(ylim = c(0, max(5, max(gene_summary$pct_high, na.rm=TRUE) * 1.12))) +
+    ggplot2::labs(title = paste0("% High entropy (>0.5) by gene — HPV", gt),
+         x = "Gene", y = "% of positions (High)") +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+          axis.title.x = ggplot2::element_text(face = "bold"),
+          axis.title.y = ggplot2::element_text(face = "bold"))
+  ggplot2::ggsave(file.path(fig_dir, sprintf("bar_pct_high_by_gene_HP%s.png", gt)),
+         p_high, width = 7.5, height = 5, dpi = 300)
+
+  # ---- 3) Violin + boxplot: entropy distribution by gene ----
+  p_violin <- df %>%
+    dplyr::filter(Gen %in% levels(gene_summary$Gen)) %>%
+    dplyr::mutate(Gen = factor(Gen, levels = levels(gene_summary$Gen))) %>%
+    ggplot2::ggplot(ggplot2::aes(x = Gen, y = Entropy)) +
+    ggplot2::geom_violin(trim = FALSE, alpha = 0.7) +
+    ggplot2::geom_boxplot(width = 0.12, outlier.shape = NA, fill = "white") +
+    ggplot2::coord_cartesian(ylim = c(0, 1)) +
+    ggplot2::labs(title = paste0("Entropy distribution by gene — HPV", gt),
+         x = "Gene", y = "Shannon Entropy (0–1)") +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+          axis.title.x = ggplot2::element_text(face = "bold"),
+          axis.title.y = ggplot2::element_text(face = "bold"))
+  ggplot2::ggsave(file.path(fig_dir, sprintf("violin_entropy_by_gene_HP%s.png", gt)),
+         p_violin, width = 8, height = 5.5, dpi = 300)
+
+  # ---- Console message: top/bottom by mean entropy ----
+  top_gene <- gene_summary %>% dplyr::arrange(dplyr::desc(mean_entropy)) %>% dplyr::slice_head(n = 1) %>% dplyr::pull(Gen)
+  low_gene <- gene_summary %>% dplyr::arrange(mean_entropy)              %>% dplyr::slice_head(n = 1) %>% dplyr::pull(Gen)
+  message(sprintf("HPV %s -> Most variable (mean): %s | Most conserved (mean): %s", gt, top_gene, low_gene))
+})
+
+
+
+```
+
+
+```{r}
+# ============================
+# Assign "Gen" by MSA column across genotypes
+# using your entropy_by_group_<genotype>_with_gen.xlsx files
+# and the MSA: HPV_Full_Aligned.fasta / HPV_Full_Aligned.fa
+# ============================
+
+suppressPackageStartupMessages({
+  library(readxl);  library(writexl)
+  library(dplyr);   library(tidyr);  library(purrr)
+  library(stringr); library(ggplot2)
+  library(Biostrings)   # IMPORTANT: for Biostrings::readDNAStringSet and Biostrings::width
+})
+
+# ---- Paths ----
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+
+# Automatically locate FASTA (accepts .fasta or .fa)
+fasta_candidates <- list.files(base_dir, pattern = "^HPV_Full_Aligned\\.(fa|fasta)$",
+                               full.names = TRUE, ignore.case = TRUE)
+if (length(fasta_candidates) == 0) {
+  stop("Could not find FASTA file 'HPV_Full_Aligned.fasta' or 'HPV_Full_Aligned.fa' in: ", base_dir)
+}
+msa_fa <- fasta_candidates[1]
+message("Using FASTA: ", msa_fa)
+
+# Outputs
+out_tab  <- file.path(base_dir, "Global", "tables",  "msa_gene_annotation.xlsx")
+out_fig  <- file.path(base_dir, "Global", "figures", "msa_gene_annotation.png")
+dir.create(dirname(out_tab), recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(out_fig), recursive = TRUE, showWarnings = FALSE)
+
+# ---- 1) Read per-genotype with_gen files and infer gene ranges ----
+genotype_dirs <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE)
+
+read_with_gen <- function(gdir){
+  g <- basename(gdir)
+  f <- list.files(gdir, pattern = "_with_gen\\.xlsx$", full.names = TRUE)
+  if (length(f) == 0) return(NULL)
+  df <- readxl::read_excel(f[1])
+  names(df) <- trimws(names(df))
+  # standardize columns
+  if (!"Position" %in% names(df)) {
+    pos <- names(df)[stringr::str_detect(tolower(names(df)), "^pos")]
+    if (length(pos) == 1) names(df)[names(df) == pos] <- "Position"
+  }
+  if (!"Entropy" %in% names(df)) {
+    ent <- names(df)[stringr::str_detect(tolower(names(df)), "entropy")]
+    if (length(ent) == 1) names(df)[names(df) == ent] <- "Entropy"
+  }
+  if (!"Gen" %in% names(df)) stop("Missing 'Gen' column in: ", f[1])
+
+  df %>%
+    dplyr::mutate(
+      Genotype = g,
+      Position = suppressWarnings(as.numeric(Position)),
+      Gen      = as.character(Gen)
+    ) %>%
+    dplyr::filter(!is.na(Position), !is.na(Gen), Gen != "") %>%
+    dplyr::arrange(Position)
+}
+
+ent_all <- purrr::map(genotype_dirs, read_with_gen) %>% purrr::compact() %>% dplyr::bind_rows()
+stopifnot(nrow(ent_all) > 0)
+
+# RANGES per gene/genotype (min–max of positions labeled with that Gene)
+gene_ranges <- ent_all %>%
+  dplyr::group_by(Genotype, Gen) %>%
+  dplyr::summarise(start = min(Position), end = max(Position), .groups = "drop") %>%
+  dplyr::arrange(Genotype, start)
+
+# ---- 2) Read MSA and build mappings column<->genome position per genotype ----
+msa <- Biostrings::readDNAStringSet(msa_fa)
+
+# Try to match FASTA names to folders (e.g., "16", "18", ...)
+msa_names <- names(msa)
+
+# If FASTA has names like "HPV16_consensus", extract numeric part
+normalize_gt <- function(x){
+  dig <- stringr::str_extract(x, "\\d+")
+  ifelse(!is.na(dig), dig, x)
+}
+
+folders      <- basename(genotype_dirs)
+folders_norm <- normalize_gt(folders)
+msa_norm     <- normalize_gt(msa_names)
+
+# Keep only sequences present in both
+keep <- msa_norm %in% folders_norm
+if (!any(keep)) {
+  stop("FASTA sequence names do not match genotype folders (not even by numeric part). ",
+       "Rename the FASTA sequences or adjust normalize_gt().")
+}
+msa       <- msa[keep]
+msa_names <- names(msa)
+msa_norm  <- normalize_gt(msa_names)
+
+# Reorder MSA to follow folder order if desired
+ord <- match(sort(unique(folders_norm)), msa_norm)
+ord <- ord[!is.na(ord)]
+msa <- msa[ord]
+msa_names <- names(msa)
+msa_norm  <- normalize_gt(msa_names)
+
+# Map: MSA name -> real folder name (first match)
+norm_to_folder <- setNames(folders[match(msa_norm, folders_norm)], msa_names)
+
+# Build maps: MSA column -> genome position, and genome position -> MSA column
+build_maps <- function(s) {
+  # s is an aligned DNAString (with '-' as gaps)
+  chars <- unlist(strsplit(as.character(s), "", fixed = TRUE))
+  ncol  <- length(chars)
+  col_to_pos <- rep(NA_integer_, ncol)
+  pos_to_col <- integer(0)
+  pos <- 0L
+  for (i in seq_len(ncol)) {
+    if (chars[i] == "-") {
+      col_to_pos[i] <- NA_integer_
+    } else {
+      pos <- pos + 1L
+      col_to_pos[i] <- pos
+      if (length(pos_to_col) < pos) pos_to_col[pos] <- i
+    }
+  }
+  list(col_to_pos = col_to_pos, pos_to_col = pos_to_col)
+}
+
+maps <- purrr::map(msa, build_maps)
+# MSA length (use Biostrings::width to avoid name conflicts)
+aln_len <- as.integer(Biostrings::width(msa)[1])
+
+# Name each map with the corresponding real folder name
+names(maps) <- norm_to_folder[names(maps)]
+
+# ---- 3) Project each genotype's gene ranges to MSA columns ----
+proj_ranges <- purrr::pmap_dfr(gene_ranges, function(Genotype, Gen, start, end) {
+  m <- maps[[Genotype]]
+  if (is.null(m)) {
+    return(tibble(Genotype = Genotype, Gen = Gen, col_start = NA_integer_, col_end = NA_integer_))
+  }
+  cs <- if (start <= length(m$pos_to_col)) m$pos_to_col[start] else NA_integer_
+  ce <- if (end   <= length(m$pos_to_col)) m$pos_to_col[end]   else NA_integer_
+  tibble(Genotype = Genotype, Gen = Gen, col_start = cs, col_end = ce)
+}) %>%
+  dplyr::filter(!is.na(col_start), !is.na(col_end)) %>%
+  dplyr::mutate(
+    col_start = pmin(col_start, col_end),
+    col_end   = pmax(col_start, col_end)
+  ) %>%
+  dplyr::arrange(Genotype, col_start)
+
+# ---- 4) Voting per MSA column to assign a consensus Gene label ----
+# For each genotype: vector (length = aln_len) with Gene label per MSA column
+make_gene_vector <- function(gt){
+  gv <- rep(NA_character_, aln_len)
+  rgs <- proj_ranges %>% dplyr::filter(Genotype == gt)
+  if (nrow(rgs) > 0) {
+    for (i in seq_len(nrow(rgs))) {
+      gv[rgs$col_start[i]:rgs$col_end[i]] <- rgs$Gen[i]
+    }
+  }
+  gv
+}
+gene_vectors <- setNames(lapply(unique(gene_ranges$Genotype), make_gene_vector),
+                         unique(gene_ranges$Genotype))
+
+# Matrix (rows = MSA columns; cols = genotypes) with gene labels
+mat_gen <- do.call(cbind, gene_vectors)
+colnames(mat_gen) <- names(gene_vectors)
+
+# Voting rules
+gene_priority <- c("E6","E7","E1","E2","E4","E5","L2","L1")
+vote_min_frac <- 0.60  # require ≥60% agreement among annotated genotypes
+
+assign_column_gene <- function(labels_charvec) {
+  labs <- labels_charvec[!is.na(labels_charvec) & labels_charvec != ""]
+  if (length(labs) == 0) return(c(Gene = "Unannotated", support = 0, n = 0))
+  tb <- sort(table(labs), decreasing = TRUE)
+  top <- names(tb)[1]
+  support <- as.integer(tb[1])
+  n <- length(labs)
+
+  # If tie, break using predefined priority
+  if (length(tb) > 1 && tb[1] == tb[2]) {
+    tied <- names(tb)[tb == tb[1]]
+    ord  <- match(tied, gene_priority)
+    top  <- tied[order(ord)][1]
+  }
+
+  frac <- support / n
+  if (frac < vote_min_frac) {
+    return(c(Gene = "Ambiguous", support = support, n = n))
+  } else {
+    return(c(Gene = top,        support = support, n = n))
+  }
+}
+
+res_list <- lapply(seq_len(aln_len), function(cix){
+  labs <- mat_gen[cix, , drop = TRUE]
+  out  <- assign_column_gene(labs)
+  tibble(aln_col = cix,
+         Gene    = out[["Gene"]],
+         support = as.integer(out[["support"]]),
+         n_votes = as.integer(out[["n"]]))
+})
+msa_gene_annot <- dplyr::bind_rows(res_list)
+
+# ---- 5) Export per-column MSA annotation ----
+writexl::write_xlsx(msa_gene_annot, out_tab)
+message("✔ MSA per-column annotation exported to: ", out_tab)
+
+# ---- 6) Figure: gene “blocks” along the MSA ----
+msa_gene_annot <- msa_gene_annot %>%
+  dplyr::mutate(Gene = factor(Gene,
+                              levels = c("E6","E7","E1","E2","E4","E5","L2","L1","Ambiguous","Unannotated")))
+
+runlen <- rle(as.character(msa_gene_annot$Gene))
+ends   <- cumsum(runlen$lengths)
+starts <- c(1, head(ends, -1) + 1)
+plot_df <- tibble(Gene = runlen$values, start = starts, end = ends) %>%
+  dplyr::filter(Gene != "Unannotated")  # optional: hide empty segments
+
+p <- ggplot(plot_df, aes(xmin = start, xmax = end, ymin = 0, ymax = 1, fill = Gene)) +
+  geom_rect() +
+  labs(title = "Gene consensus along MSA columns",
+       x = "MSA column", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "bottom")
+
+ggsave(out_fig, p, width = 12, height = 2.8, dpi = 300)
+message("✔ Figure exported to: ", out_fig)
+
+```
+
+
+```{r}
+# ============================
+# Group classification for Entropy_consensus (inter-genotype consensus)
+# Reads: C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos/Consensos/Entropy_consensus.(xlsx|csv)
+# Writes:
+#   - Entropy_consensus_with_groups.xlsx
+#   - Entropy_consensus_group_summary.xlsx
+# ============================
+
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+  library(stringr)
+  library(writexl)
+})
+
+# --- Paths ---
+cons_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos/Consensos"
+
+# Automatically find the file (xlsx or csv)
+cand <- list.files(cons_dir, pattern = "^Entropy_consensus\\.(xlsx|csv)$",
+                   full.names = TRUE, ignore.case = TRUE)
+if (length(cand) == 0) stop("Could not find 'Entropy_consensus.xlsx' or 'Entropy_consensus.csv' in: ", cons_dir)
+in_path <- cand[1]
+message("Reading: ", in_path)
+
+# --- Robust read ---
+if (grepl("\\.xlsx$", in_path, ignore.case = TRUE)) {
+  df <- read_excel(in_path)
+} else {
+  df <- read.csv(in_path, check.names = FALSE)
+}
+
+# --- Standardize expected names and types ---
+names(df) <- trimws(names(df))
+
+# Ensure 'Position' and 'Entropy' columns exist
+if (!"Position" %in% names(df)) {
+  pos_col <- names(df)[str_detect(tolower(names(df)), "^pos")]
+  if (length(pos_col) == 1) names(df)[names(df) == pos_col] <- "Position"
+}
+if (!"Entropy" %in% names(df)) {
+  ent_col <- names(df)[str_detect(tolower(names(df)), "entropy")]
+  if (length(ent_col) == 1) names(df)[names(df) == ent_col] <- "Entropy"
+}
+
+# Convert to numeric (supports decimal commas)
+df <- df %>%
+  mutate(
+    Position = suppressWarnings(as.numeric(Position)),
+    Entropy  = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE)))
+  ) %>%
+  filter(!is.na(Position), !is.na(Entropy)) %>%
+  arrange(Position)
+
+# --- Group classification (your rules) ---
+df <- df %>%
+  mutate(
+    Group = case_when(
+      Entropy == 0 ~ "Conserved",
+      Entropy >= 0.1 & Entropy <= 0.5 ~ "Medium",
+      Entropy > 0.5 ~ "High",
+      TRUE ~ NA_character_
+    ),
+    Group = factor(Group, levels = c("Conserved", "Medium", "High"))
+  )
+
+# --- Export results ---
+out_table <- file.path(cons_dir, "Entropy_consensus_with_groups.xlsx")
+write_xlsx(df, out_table)
+message("✔ File with groups: ", out_table)
+
+# (Optional) Count summary + statistics
+group_counts <- df %>%
+  filter(!is.na(Group)) %>%
+  count(Group, name = "Count") %>%
+  mutate(Percent = round(100 * Count / sum(Count), 2))
+
+entropy_summary <- tibble(
+  n_positions    = nrow(df),
+  pct_conserved  = mean(df$Group == "Conserved", na.rm = TRUE) * 100,
+  pct_high       = mean(df$Group == "High", na.rm = TRUE) * 100,
+  entropy_min    = min(df$Entropy, na.rm = TRUE),
+  entropy_median = median(df$Entropy, na.rm = TRUE),
+  entropy_mean   = mean(df$Entropy, na.rm = TRUE),
+  entropy_max    = max(df$Entropy, na.rm = TRUE)
+)
+
+out_summary <- file.path(cons_dir, "Entropy_consensus_group_summary.xlsx")
+write_xlsx(list("Group_Counts" = group_counts,
+                "Entropy_Summary" = entropy_summary),
+           out_summary)
+message("✔ Summary exported: ", out_summary)
+
+```
+
+```{r}
+
+# ============================================================
+# INTER-GENOTYPE using Entropy_consensus_with_groups
+# Saves everything into: .../Consensos/Resultados_Inter/{figures,tables}
+# (version avoiding conflicts with IRanges::slice)
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(ggplot2)
+  library(writexl); library(stringr); library(zoo); library(purrr)
+})
+
+# ---------- PATHS ----------
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+cons_dir <- file.path(base_dir, "Consensos")
+in_path  <- file.path(cons_dir, "Entropy_consensus_with_groups.xlsx")  # <-- adjust if .csv
+
+results_subdir <- "Resultados_Inter"
+out_dir  <- file.path(cons_dir, results_subdir)
+fig_dir  <- file.path(out_dir, "figures")
+tab_dir  <- file.path(out_dir, "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---------- 1) READ & CLEAN ----------
+df <- readxl::read_excel(in_path)
+names(df) <- trimws(names(df))
+
+if (!"Position" %in% names(df)) {
+  pos <- names(df)[stringr::str_detect(tolower(names(df)), "^pos")]
+  if (length(pos)==1) names(df)[names(df)==pos] <- "Position"
+}
+if (!"Entropy" %in% names(df)) {
+  ent <- names(df)[stringr::str_detect(tolower(names(df)), "entropy")]
+  if (length(ent)==1) names(df)[names(df)==ent] <- "Entropy"
+}
+if (!all(c("Gen","Group") %in% names(df))) stop("Missing Gen and/or Group columns.")
+
+df <- df %>%
+  dplyr::mutate(
+    Position = suppressWarnings(as.numeric(Position)),
+    Entropy  = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE))),
+    Gen      = as.character(Gen),
+    Group    = factor(Group, levels = c("Conserved","Medium","High"))
+  ) %>%
+  dplyr::filter(!is.na(Position), !is.na(Entropy)) %>%
+  dplyr::arrange(Position)
+
+writexl::write_xlsx(df, file.path(tab_dir, "inter_consensus_ORDERED.xlsx"))
+
+# ---------- 2) SUMMARY TABLES ----------
+summary_global <- tibble::tibble(
+  n_positions    = nrow(df),
+  pct_conserved  = mean(df$Group=="Conserved")*100,
+  pct_high       = mean(df$Group=="High")*100,
+  entropy_min    = min(df$Entropy),
+  entropy_median = median(df$Entropy),
+  entropy_mean   = mean(df$Entropy),
+  entropy_max    = max(df$Entropy)
+)
+
+class_counts <- df %>%
+  dplyr::count(Group, name = "Count") %>%
+  dplyr::mutate(Percent = round(100*Count/sum(Count), 2))
+
+gene_stats <- df %>%
+  dplyr::filter(!is.na(Gen), Gen!="") %>%
+  dplyr::group_by(Gen) %>%
+  dplyr::summarise(
+    n        = dplyr::n(),
+    H_mean   = mean(Entropy),
+    H_median = median(Entropy),
+    H_IQR    = IQR(Entropy),
+    pct_high = mean(Group=="High")*100,
+    pct_cons = mean(Group=="Conserved")*100,
+    .groups="drop"
+  ) %>%
+  dplyr::arrange(Gen)
+
+writexl::write_xlsx(list(
+  "Summary_global" = summary_global,
+  "Class_counts"   = class_counts,
+  "Gene_stats"     = gene_stats
+), file.path(tab_dir, "inter_consensus_summary_tables.xlsx"))
+
+# ---------- 3) BASIC FIGURES ----------
+png(file.path(fig_dir, "inter_hist_entropy.png"), width=7, height=5, units="in", res=300)
+op <- par(cex.main=1.5, cex.lab=1.3, cex.axis=1.1, mgp=c(2.2,0.7,0))
+hist(df$Entropy, breaks=seq(0,1,by=0.1),
+     main="Inter-genotype entropy distribution",
+     xlab="Shannon Entropy", col="lightblue",
+     xlim=c(0,1), xaxt="n", freq=TRUE)
+axis(side=1, at=seq(0,1,by=0.1))
+par(op); dev.off()
+
+p_profile <- ggplot2::ggplot(df, ggplot2::aes(Position, Entropy, color=Group)) +
+  ggplot2::geom_point(size=.6, alpha=.8) +
+  ggplot2::geom_hline(yintercept=c(0.1,0.5), linetype="dashed") +
+  ggplot2::labs(title="Inter-genotype entropy across MSA columns",
+       x="MSA column (Position)", y="Shannon Entropy", color="Class") +
+  ggplot2::theme_minimal(base_size=13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust=.5, face="bold"))
+ggplot2::ggsave(file.path(fig_dir, "inter_profile_points.png"), p_profile, width=10, height=5.5, dpi=300)
+
+k <- 51
+df_roll <- df %>%
+  dplyr::arrange(Position) %>%
+  dplyr::mutate(Entropy_smooth = zoo::rollapply(Entropy, k, mean, align="center", fill=NA))
+p_roll <- ggplot2::ggplot(df_roll, ggplot2::aes(Position, Entropy_smooth)) +
+  ggplot2::geom_line() +
+  ggplot2::labs(title=paste0("Rolling mean of entropy (k=",k,")"),
+       x="MSA column (Position)", y="Rolling mean entropy") +
+  ggplot2::theme_minimal(base_size=13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust=.5, face="bold"))
+ggplot2::ggsave(file.path(fig_dir, "inter_rolling_mean.png"), p_roll, width=10, height=5.5, dpi=300)
+
+# ---------- 4) CONTIGUOUS HOTSPOTS (High > 0.5) ----------
+high_blocks <- df %>%
+  dplyr::filter(Group=="High") %>%
+  dplyr::arrange(Position) %>%
+  dplyr::mutate(d = c(NA, diff(Position)),
+                grp = cumsum(ifelse(is.na(d) | d!=1, 1, 0))) %>%
+  dplyr::group_by(grp) %>%
+  dplyr::summarise(start=min(Position), end=max(Position),
+                   length=end-start+1, peak=max(Entropy), .groups="drop") %>%
+  dplyr::arrange(dplyr::desc(length), dplyr::desc(peak))
+
+writexl::write_xlsx(high_blocks, file.path(tab_dir, "inter_high_blocks.xlsx"))
+
+if (nrow(high_blocks) > 0) {
+  p_rect <- ggplot2::ggplot(high_blocks, ggplot2::aes(xmin=start, xmax=end, ymin=0, ymax=1)) +
+    ggplot2::geom_rect(fill="tomato", alpha=.6) +
+    ggplot2::labs(title="High-entropy blocks (>0.5) along MSA",
+         x="MSA column (Position)", y=NULL) +
+    ggplot2::theme_minimal(base_size=12) +
+    ggplot2::theme(axis.text.y = ggplot2::element_blank(), axis.ticks.y = ggplot2::element_blank())
+  ggplot2::ggsave(file.path(fig_dir, "inter_high_blocks_rect.png"), p_rect, width=10, height=2.8, dpi=300)
+}
+
+# ---------- 5) BY GENE ----------
+df_gen <- df %>% dplyr::filter(!is.na(Gen), Gen!="")
+
+p_violin <- ggplot2::ggplot(df_gen, ggplot2::aes(Gen, Entropy)) +
+  ggplot2::geom_violin(trim=FALSE, alpha=.7) +
+  ggplot2::geom_boxplot(width=.12, outlier.shape = NA, fill="white") +
+  ggplot2::coord_cartesian(ylim=c(0,1)) +
+  ggplot2::labs(title="Inter-genotype entropy by gene",
+       x="Gene", y="Shannon Entropy (0–1)") +
+  ggplot2::theme_minimal(base_size=13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust=.5, face="bold"))
+ggplot2::ggsave(file.path(fig_dir, "inter_violin_by_gene.png"), p_violin, width=9, height=5.5, dpi=300)
+
+class_by_gene <- df_gen %>%
+  dplyr::count(Gen, Group) %>%
+  dplyr::group_by(Gen) %>%
+  dplyr::mutate(pct = n/sum(n)*100) %>%
+  dplyr::ungroup()
+writexl::write_xlsx(class_by_gene, file.path(tab_dir, "inter_class_composition_by_gene.xlsx"))
+
+p_stack <- ggplot2::ggplot(class_by_gene, ggplot2::aes(Gen, pct, fill=Group)) +
+  ggplot2::geom_col() +
+  ggplot2::labs(title="Class composition by gene (inter-genotype)",
+       x="Gene", y="% of positions") +
+  ggplot2::theme_minimal(base_size=13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust=.5, face="bold"))
+ggplot2::ggsave(file.path(fig_dir, "inter_class_composition_by_gene.png"), p_stack, width=9, height=5.5, dpi=300)
+
+# ---------- 6) RELATIVE POSITION WITHIN GENE ----------
+df_rel <- df_gen %>%
+  dplyr::arrange(Gen, Position) %>%
+  dplyr::group_by(Gen) %>%
+  dplyr::mutate(gap = c(NA, diff(Position)),
+                seg = cumsum(ifelse(is.na(gap) | gap!=1, 1, 0))) %>%
+  dplyr::group_by(Gen, seg) %>%
+  dplyr::mutate(pos_min = min(Position), pos_max = max(Position),
+                pos_rel = (Position - pos_min)/pmax(1, pos_max - pos_min)) %>%
+  dplyr::ungroup()
+
+df_rel_bin <- df_rel %>%
+  dplyr::mutate(bin = cut(pos_rel, breaks = seq(0,1,by=0.02), include.lowest=TRUE, right=FALSE)) %>%
+  dplyr::group_by(Gen, bin) %>%
+  dplyr::summarise(H_mean = mean(Entropy), .groups="drop") %>%
+  dplyr::mutate(bin_mid = as.numeric(sub("\\[(.*),(.*)\\)", "\\1", as.character(bin))) + 0.01)
+
+writexl::write_xlsx(df_rel_bin, file.path(tab_dir, "inter_entropy_relative_position_by_gene.xlsx"))
+
+p_rel <- ggplot2::ggplot(df_rel_bin, ggplot2::aes(bin_mid, H_mean, color=Gen)) +
+  ggplot2::geom_line() +
+  ggplot2::labs(title="Inter-genotype entropy vs relative position within gene",
+       x="Relative position (0–1)", y="Mean Shannon Entropy") +
+  ggplot2::theme_minimal(base_size=13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust=.5, face="bold"))
+ggplot2::ggsave(file.path(fig_dir, "inter_entropy_vs_relative_position.png"), p_rel, width=10, height=6, dpi=300)
+
+# ---------- 7) SLIDING WINDOWS ----------
+win_size <- 150; step <- 25
+starts <- seq(min(df$Position), max(df$Position) - win_size + 1, by = step)
+
+win_tbl <- purrr::map_dfr(starts, function(s){
+  e <- s + win_size - 1
+  w <- df %>% dplyr::filter(Position >= s, Position <= e)
+  if (nrow(w) < win_size * 0.8) return(NULL)
+  tibble::tibble(
+    start   = s, end = e,
+    H_mean  = mean(w$Entropy),
+    H_median= median(w$Entropy),
+    pct_cons= mean(w$Group=="Conserved")*100,
+    pct_high= mean(w$Group=="High")*100,
+    gene_mode = {
+      gm <- w %>% dplyr::count(Gen, name="n") %>% dplyr::arrange(dplyr::desc(n)) %>%
+        dplyr::slice_head(n = 1) %>% dplyr::pull(Gen)
+      if (length(gm)==0) NA_character_ else gm
+    }
+  )
+})
+
+pan_candidates <- win_tbl %>%
+  dplyr::filter(H_mean <= 0.10, pct_cons >= 90) %>%
+  dplyr::arrange(H_mean, dplyr::desc(pct_cons))
+
+var_candidates <- win_tbl %>%
+  dplyr::filter(H_mean >= 0.40, pct_high >= 30) %>%
+  dplyr::arrange(dplyr::desc(H_mean), dplyr::desc(pct_high))
+
+writexl::write_xlsx(list(
+  "Windows_all"         = win_tbl,
+  "Pan_candidates"      = pan_candidates,
+  "Variable_candidates" = var_candidates
+), file.path(tab_dir, sprintf("inter_windows_win%d_step%d.xlsx", win_size, step)))
+
+message("Done! Everything was saved to: ", out_dir)
+
+```
+
+
+```{r}
+# ======================================================
+# Which genes are more conserved / more variable?
+# Main metric: mean entropy per gene (0–1)
+# Input:  .../Consensos/Entropy_consensus_with_groups.xlsx
+# Outputs:
+#   - Table : .../Consensos/Resultados_Inter/tables/gene_conservation_summary.xlsx
+#   - Figure: .../Consensos/Resultados_Inter/figures/gene_conservation_lollipop.png
+# ======================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(ggplot2); library(stringr)
+  library(writexl); library(forcats); library(scales)
+})
+
+# Paths
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+cons_dir <- file.path(base_dir, "Consensos")
+in_path  <- file.path(cons_dir, "Entropy_consensus_with_groups.xlsx")
+
+out_dir  <- file.path(cons_dir, "Resultados_Inter")
+fig_dir  <- file.path(out_dir, "figures")
+tab_dir  <- file.path(out_dir, "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+
+# 1) Read & clean
+df <- read_excel(in_path)
+names(df) <- trimws(names(df))
+
+if (!"Gen" %in% names(df) || !"Entropy" %in% names(df)) {
+  stop("The file must contain 'Gen' and 'Entropy' columns.")
+}
+
+df <- df %>%
+  mutate(
+    Gen     = as.character(Gen),
+    Entropy = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE)))
+  ) %>%
+  filter(!is.na(Gen), Gen != "", !is.na(Entropy))
+
+# 2) Per-gene summary
+gene_sum <- df %>%
+  group_by(Gen) %>%
+  summarise(
+    n              = n(),
+    mean_entropy   = mean(Entropy, na.rm = TRUE),
+    median_entropy = median(Entropy, na.rm = TRUE),
+    pct_conserved  = mean(Entropy == 0, na.rm = TRUE) * 100,
+    pct_high       = mean(Entropy > 0.5, na.rm = TRUE) * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(mean_entropy) %>%
+  mutate(
+    Gen = fct_reorder(Gen, mean_entropy),            # ordering for the plot
+    label = paste0("mean=", round(mean_entropy, 3),
+                   " | %High=", round(pct_high, 1), "%")
+  )
+
+# Export summary table
+write_xlsx(gene_sum, file.path(tab_dir, "gene_conservation_summary.xlsx"))
+
+# 3) Plot: Lollipop (0–1)
+p <- ggplot(gene_sum, aes(x = mean_entropy, y = Gen)) +
+  geom_segment(aes(x = 0, xend = mean_entropy, y = Gen, yend = Gen),
+               linewidth = 1, color = "grey75") +
+  geom_point(aes(color = mean_entropy), size = 4) +
+  scale_color_viridis_c(limits = c(0, 1), name = "Mean entropy",
+                        option = "D", oob = squish) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, by = 0.1)) +
+  labs(
+    title = "Conservation vs variability by gene (inter-genotype)",
+    subtitle = "Lower mean entropy → more conserved | Higher → more variable",
+    x = "Mean Shannon entropy (0–1)",
+    y = "Gene"
+  ) +
+  geom_text(aes(label = label), hjust = -0.05, size = 3) +
+  coord_cartesian(xlim = c(0, max(1, max(gene_sum$mean_entropy, na.rm=TRUE) * 1.05))) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = .5, face = "bold"),
+    legend.position = "right"
+  )
+
+# Save figure
+out_png <- file.path(fig_dir, "gene_conservation_lollipop.png")
+ggsave(out_png, p, width = 9.5, height = 6, dpi = 300)
+
+message("✔ Table:  ", file.path(tab_dir, "gene_conservation_summary.xlsx"))
+message("✔ Plot:   ", out_png)
+
+```
+
+```{r}
+# ======================================================
+# INTER-GENOTYPE — Per-GENE summary with 95% CI (bootstrap) + Heatmaps
+# Inputs:
+#   C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos/Consensos/Entropy_consensus_with_groups.xlsx
+# Outputs:
+#   - tables/gene_conservation_summary_with_CI.xlsx
+#   - tables/gene_metrics_table.xlsx
+#   - figures/gene_conservation_lollipop_CI.png
+#   - figures/heatmap_gene_metrics_RAW.png
+#   - figures/heatmap_gene_metrics_NORMALIZED.png
+# ======================================================
+
+suppressPackageStartupMessages({
+  library(readxl);  library(dplyr);   library(tidyr);   library(ggplot2)
+  library(stringr); library(writexl); library(forcats); library(scales)
+  library(purrr)
+})
+
+# ---------- PATHS ----------
+base_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos"
+cons_dir <- file.path(base_dir, "Consensos")
+in_path  <- file.path(cons_dir, "Entropy_consensus_with_groups.xlsx")
+
+out_dir  <- file.path(cons_dir, "Resultados_Inter")
+fig_dir  <- file.path(out_dir, "figures")
+tab_dir  <- file.path(out_dir, "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---------- 1) READ & CLEAN ----------
+df <- readxl::read_excel(in_path)
+names(df) <- trimws(names(df))
+
+if (!all(c("Gen","Entropy") %in% names(df))) {
+  stop("The file must contain 'Gen' and 'Entropy' columns.")
+}
+
+df <- df %>%
+  dplyr::mutate(
+    Gen     = as.character(Gen),
+    Entropy = suppressWarnings(as.numeric(gsub(",", ".", as.character(Entropy), fixed = TRUE)))
+  ) %>%
+  dplyr::filter(!is.na(Gen), Gen != "", !is.na(Entropy))
+
+# ---------- 2) BOOTSTRAP FUNCTION (95% CI FOR THE MEAN) ----------
+boot_mean_ci <- function(x, B = 2000L, conf = 0.95){
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(c(mean = mean(x), lo = NA_real_, hi = NA_real_))
+  set.seed(123)  # reproducible
+  m <- replicate(B, mean(sample(x, replace = TRUE)), simplify = TRUE)
+  q <- stats::quantile(m, probs = c((1-conf)/2, 1-(1-conf)/2), na.rm = TRUE)
+  c(mean = mean(x), lo = as.numeric(q[1]), hi = as.numeric(q[2]))
+}
+
+# ---------- 3) PER-GENE SUMMARY + 95% CI ----------
+gene_sum <- df %>%
+  dplyr::group_by(Gen) %>%
+  dplyr::summarise(
+    n              = dplyr::n(),
+    vals           = list(Entropy),              # per-gene values (list column)
+    mean_entropy   = mean(Entropy),
+    median_entropy = median(Entropy),
+    IQR_entropy    = IQR(Entropy),
+    pct_conserved  = mean(Entropy == 0)  * 100,
+    pct_high       = mean(Entropy > 0.5) * 100,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    ci        = purrr::map(vals, boot_mean_ci),
+    mean_boot = purrr::map_dbl(ci, ~ .x[["mean"]]),
+    lo        = purrr::map_dbl(ci, ~ .x[["lo"]]),
+    hi        = purrr::map_dbl(ci, ~ .x[["hi"]])
+  ) %>%
+  dplyr::select(-vals, -ci) %>%
+  dplyr::arrange(mean_boot) %>%
+  dplyr::mutate(
+    Gen   = forcats::fct_reorder(Gen, mean_boot),
+    label = paste0("mean=", round(mean_boot, 3),
+                   " | %High=", round(pct_high, 1), "%")
+  )
+
+# Export table with CI
+writexl::write_xlsx(gene_sum, file.path(tab_dir, "gene_conservation_summary_with_CI.xlsx"))
+
+# ---------- 4) LOLLIPOP PLOT WITH 95% CI ----------
+p_lolli <- ggplot2::ggplot(gene_sum, ggplot2::aes(x = mean_boot, y = Gen)) +
+  ggplot2::geom_segment(ggplot2::aes(x = 0, xend = mean_boot, y = Gen, yend = Gen),
+                        linewidth = 1, color = "grey80") +
+  ggplot2::geom_errorbarh(ggplot2::aes(xmin = lo, xmax = hi),
+                          height = 0.15, color = "grey35", linewidth = 0.7) +
+  ggplot2::geom_point(ggplot2::aes(color = mean_boot), size = 4) +
+  ggplot2::scale_color_viridis_c(name = "Mean entropy",
+                                 limits = c(0,1), oob = scales::squish) +
+  ggplot2::scale_x_continuous(limits = c(0,1), breaks = seq(0,1,0.1)) +
+  ggplot2::labs(
+    title    = "Conservation vs variability by gene (inter-genotype) — 95% CI",
+    subtitle = "Lower mean entropy → more conserved | Higher → more variable",
+    x = "Mean Shannon entropy (0–1)",
+    y = "Gene"
+  ) +
+  ggplot2::geom_text(ggplot2::aes(label = label), hjust = -0.05, size = 3) +
+  ggplot2::coord_cartesian(xlim = c(0, max(1, max(gene_sum$hi, na.rm=TRUE) * 1.05))) +
+  ggplot2::theme_minimal(base_size = 13) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+                 legend.position = "right")
+
+ggplot2::ggsave(file.path(fig_dir, "gene_conservation_lollipop_CI.png"),
+                p_lolli, width = 10, height = 6, dpi = 300)
+
+# ---------- 5) HEATMAPS OF PER-GENE METRICS ----------
+# Wide table of metrics
+metrics <- gene_sum %>%
+  dplyr::select(Gen, n, mean_entropy, median_entropy, IQR_entropy, pct_conserved, pct_high)
+
+writexl::write_xlsx(metrics, file.path(tab_dir, "gene_metrics_table.xlsx"))
+
+# === FIXED GENE ORDER (more conserved → more variable) ===
+# Use lollipop order (increasing mean_boot)
+order_gen <- gene_sum %>%
+  dplyr::arrange(mean_boot) %>%
+  dplyr::pull(Gen) %>%
+  as.character()
+
+# Long format for heatmaps (apply fixed levels)
+metrics_long <- metrics %>%
+  tidyr::pivot_longer(
+    cols      = c(mean_entropy, median_entropy, IQR_entropy, pct_conserved, pct_high),
+    names_to  = "metric",
+    values_to = "value"
+  ) %>%
+  dplyr::mutate(
+    metric = factor(metric,
+                    levels = c("mean_entropy","median_entropy","IQR_entropy","pct_conserved","pct_high"),
+                    labels = c("Mean H","Median H","IQR H","% Conserved","% High")),
+    Gen = factor(Gen, levels = order_gen)
+  )
+
+# (A) RAW heatmap (real values)
+p_raw <- ggplot2::ggplot(metrics_long, ggplot2::aes(x = metric, y = Gen, fill = value)) +
+  ggplot2::geom_tile(color = "white", linewidth = 0.25) +
+  ggplot2::scale_fill_viridis_c(name = "Value",
+                                guide = ggplot2::guide_colorbar(barheight = unit(60, "pt"))) +
+  ggplot2::labs(title = "Gene metrics (inter-genotype) — RAW values",
+                x = "Metric", y = "Gene") +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+                 axis.title.x = ggplot2::element_text(face = "bold"),
+                 axis.title.y = ggplot2::element_text(face = "bold"),
+                 panel.grid = element_blank())
+
+ggplot2::ggsave(file.path(fig_dir, "heatmap_gene_metrics_RAW.png"),
+                p_raw, width = 7.5, height = 6.5, dpi = 300)
+
+# (B) NORMALIZED heatmap (0–1 per metric) with raw labels
+metrics_norm <- metrics_long %>%
+  dplyr::group_by(metric) %>%
+  dplyr::mutate(
+    value_norm = scales::rescale(value, to = c(0,1),
+                                 from = range(value, na.rm = TRUE))
+  ) %>%
+  dplyr::ungroup()
+
+p_norm <- ggplot2::ggplot(metrics_norm, ggplot2::aes(x = metric, y = Gen, fill = value_norm)) +
+  ggplot2::geom_tile(color = "white", linewidth = 0.25) +
+  ggplot2::scale_fill_viridis_c(name = "Scaled (0–1)", limits = c(0,1)) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = ifelse(metric %in% c("% Conserved","% High"),
+                                paste0(round(value,1), "%"),
+                                round(value,3))),
+    size = 3, color = "white"
+  ) +
+  ggplot2::labs(title = "Gene metrics (inter-genotype) — normalized 0–1 (labels show raw)",
+                x = "Metric", y = "Gene") +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(plot.title = ggplot2::element_text(hjust = .5, face = "bold"),
+                 axis.title.x = ggplot2::element_text(face = "bold"),
+                 axis.title.y = ggplot2::element_text(face = "bold"),
+                 panel.grid = element_blank())
+
+ggplot2::ggsave(file.path(fig_dir, "heatmap_gene_metrics_NORMALIZED.png"),
+                p_norm, width = 8.2, height = 7, dpi = 300)
+
+```
+
+```{r}
+# ===================== Phylogeny using genotype consensus sequences =====================
+# ================================================================================
+suppressPackageStartupMessages({
+  library(Biostrings)
+  library(msa)        # alignment (ClustalOmega or MUSCLE)
+  library(ape)        # DNAbin, write.dna, read.dna, nj, etc.
+  library(phangorn)   # phyDat, dist.ml, pml, modelTest, bootstrap
+  library(dplyr)
+  library(stringr)
+})
+
+# === Paths ===
+cons_dir <- "C:/Users/Elizabeth/Desktop/Papers 2025/Paper VPH/Todos/Consensos"
+out_dir  <- file.path(cons_dir, "Phylogeny")
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# === 1) Find and read consensus FASTA files ===
+pat <- "(?i)^Consensus_[0-9]+\\.(fasta|fa|fna)$"
+fns <- list.files(cons_dir, pattern = pat, full.names = TRUE)
+if (length(fns) == 0) stop("No files like 'Consensus_X.fasta' were found in: ", cons_dir)
+
+sets <- lapply(fns, readDNAStringSet)
+dna  <- do.call(c, sets)
+
+# Rename tips as "HPV <X>" based on file name
+tip_from_file <- function(fp) paste0("HPV ", str_extract(basename(fp), "(?<=Consensus_)\\d+"))
+if (length(dna) == length(fns)) names(dna) <- vapply(fns, tip_from_file, character(1))
+
+# Save combined FASTA (traceability)
+combined_fa <- file.path(out_dir, "Combined_Consensus.fasta")
+writeXStringSet(dna, filepath = combined_fa)
+
+# === 2) Align with msa (ClustalOmega recommended; MUSCLE as alternative) ===
+aln_msa <- msa::msaClustalOmega(dna)   # alternative: aln_msa <- msa::msaMuscle(dna)
+
+# === 3) Save the MSA as FASTA (reliable via DNAbin) and create a DNA phyDat ===
+aln_dnabin <- msa::msaConvert(aln_msa, type = "ape::DNAbin")
+msa_fa <- file.path(out_dir, "Consensus_Aligned.fasta")
+ape::write.dna(aln_dnabin, file = msa_fa, format = "fasta", nbcol = -1, colsep = "")
+
+# For ML (phangorn), enforce DNA type explicitly:
+phy <- phangorn::phyDat(aln_dnabin, type = "DNA")
+
+# === 4) Neighbor-Joining tree with TN93 distances (APE) ===
+dist_tn93 <- ape::dist.dna(aln_dnabin, model = "TN93", pairwise.deletion = TRUE)
+tree_nj   <- ape::nj(dist_tn93)
+ape::write.tree(tree_nj, file.path(out_dir, "HPV_genotypes_NJ_TN93.newick"))
+
+# === 5) Maximum Likelihood (ML) tree with model selection (AICc) + bootstrap ===
+fit0 <- phangorn::pml(tree_nj, data = phy)
+
+# --- Robust model selection ---
+mt <- phangorn::modelTest(
+  fit0,
+  model = c("JC","K80","F81","HKY","GTR"),
+  G = TRUE, I = TRUE, k = 4
+)
+stopifnot(nrow(mt) > 0)
+mt <- as.data.frame(mt)
+has_AICc <- "AICc" %in% names(mt)
+best <- mt[order(mt[[ if (has_AICc) "AICc" else "AIC" ]]), ][1, , drop = FALSE]
+
+# NOTE: column is "Model" (capital M)
+model_str <- as.character(best$Model)
+message("Best model by AICc: ", model_str)
+
+# Parse +G and +I, and extract base model
+use_gamma  <- grepl("\\+G", model_str)
+use_inv    <- grepl("\\+I", model_str)
+k_val      <- if (use_gamma) 4 else 1
+base_model <- sub("\\+.*$", "", model_str)  # e.g., "GTR+G+I" -> "GTR"
+if (!nzchar(base_model)) {
+  warning("Empty model from modelTest; using HKY by default.")
+  base_model <- "HKY"; use_gamma <- TRUE; use_inv <- FALSE; k_val <- 4
+}
+
+# --- ML optimization ---
+fit_ml <- phangorn::optim.pml(
+  fit0,
+  model         = base_model,
+  optNni        = TRUE,
+  optGamma      = use_gamma,
+  optInv        = use_inv,
+  k             = k_val,
+  rearrangement = "stochastic"
+)
+
+# --- ML bootstrap (adjust 'bs' as needed: 300–1000) ---
+set.seed(123)
+bs_ml <- phangorn::bootstrap.pml(fit_ml, bs = 1000, optNni = TRUE)
+
+# Save ML tree
+ape::write.tree(fit_ml$tree, file.path(out_dir, "HPV_genotypes_ML.newick"))
+
+# === 6) Plot with bootstrap supports (≥50%) ===
+pdf(file.path(out_dir, "HPV_genotypes_ML_bootstrap.pdf"), width = 7.5, height = 10)
+plot(phangorn::plotBS(fit_ml$tree, bs_ml, p = 50), cex = 0.8)
+title("HPV genotypes – ML tree (bootstrap %)")
+dev.off()
+
+png(file.path(out_dir, "HPV_genotypes_ML_bootstrap.png"), width = 1900, height = 2600, res = 250)
+plot(phangorn::plotBS(fit_ml$tree, bs_ml, p = 50), cex = 0.8)
+title("HPV genotypes – ML tree (bootstrap %)")
+dev.off()
+
+message("Done. Files were created in: ", out_dir)
+
+
+
+```
